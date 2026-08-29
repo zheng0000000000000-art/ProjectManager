@@ -57,3 +57,10 @@ The browser runner emitted repeated `NO_COLOR`/`FORCE_COLOR` environment warning
 - Evidence: the initial completion UI checks used card-wide substring matching. The revised scenario observed an exact `.status` value of `완료`, captured the complete displayed completion-time string, reloaded, and observed the identical string afterward.
 - Setup coverage: the setup-contract scenario now launches the actual standalone `global-setup.ts` process against an isolated database selected through `BROWSER_TEST_DATABASE_URL`. Before that path was supported, the red run attempted to unlink the live database and failed with `EBUSY`; after the fix, the isolated sentinel audit was removed.
 - Fresh verification for this round used Node `v22.14.0`: focused Phase 3 E2E 3/3, unit tests 84/84 across 15 files, lint exit 0, production build exit 0, and full E2E 16/16.
+
+## Fix Round 2 — Whole-Response Audit Privacy
+
+- Evidence: Fix Round 1 constrained each `data.tasks` object to task-domain keys, but no longer checked the complete response envelope. A sibling or top-level audit field could therefore bypass the object allowlist.
+- Fix: both `/api/my-work` and `/api/task-pool` responses are serialized after parsing and checked for the exact quoted property names `request_id`, `metadata_json`, `requestId`, `auditLogs`, and `metadata`. The target-task presence and per-task safe-key allowlists remain in place; no broad `audit` substring check was added.
+- Focused evidence used Node `v22.14.0`, explicitly recreated the database, and invoked the Playwright CLI directly with `tests/e2e/phase-3-human-completion-audit.spec.ts`. The runner reported exactly 3 tests and all 3 passed.
+- Full E2E verification then reported 16 passed and 0 failed.
