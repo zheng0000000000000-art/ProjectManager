@@ -37,6 +37,15 @@ describe("actor resolver", () => {
     });
   });
 
+  it("uses the human actor even when a legacy AI browser cookie remains", async () => {
+    const resolve = setup();
+
+    await expect(resolve({ cookieActorId: "user-codex" })).resolves.toMatchObject({
+      userId: "user-fixed",
+      actorType: "human",
+    });
+  });
+
   it("rejects an invalid explicit API actor instead of impersonating the human", async () => {
     const resolve = setup();
 

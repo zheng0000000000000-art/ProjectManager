@@ -1,20 +1,8 @@
 import path from "node:path";
 import Database from "better-sqlite3";
-import { expect, test, type APIRequestContext, type BrowserContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 
 const databaseFilename = path.join(process.cwd(), "data", "browser-test.db");
-const actorCookie = (userId: string) => ({
-  name: "project-actor",
-  value: userId,
-  url: "http://127.0.0.1:3100",
-  httpOnly: true,
-  sameSite: "Lax" as const,
-});
-
-async function setActor(context: BrowserContext, userId: string) {
-  await context.addCookies([actorCookie(userId)]);
-}
-
 async function publishFromBrowser(page: import("@playwright/test").Page, title: string) {
   await page.goto("/tasks/new");
   await page.getByLabel("작업명").fill(title);
@@ -39,38 +27,30 @@ async function apiJson(
   return { response, body: await response.json() as Record<string, unknown> };
 }
 
-test("the loginless worker selector persists the Codex session", async ({ page, context }) => {
+test("the human-facing browser has no loginless actor switcher", async ({ page }) => {
   await page.goto("/my-work");
-  await page.getByLabel("현재 작업자").selectOption("user-codex");
-  await expect.poll(async () => (await context.cookies()).find(
-    (cookie) => cookie.name === "project-actor",
-  )?.value).toBe("user-codex");
-
-  await page.reload();
-  await expect(page.getByLabel("현재 작업자")).toHaveValue("user-codex");
-  await expect(page.locator(".actor-badge")).toHaveText("AI");
+  await expect(page.getByLabel("현재 작업자")).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "Codex · AI" })).toHaveCount(0);
 });
 
-test("human and Codex browser sessions compete and exactly one starts the task", async ({ browser }) => {
-  const humanContext = await browser.newContext();
-  const codexContext = await browser.newContext();
-  await setActor(humanContext, "user-fixed");
-  await setActor(codexContext, "user-codex");
-  const humanPage = await humanContext.newPage();
-  const codexPage = await codexContext.newPage();
+test("independent browser sessions use the same human account and record one take", async ({ browser }) => {
+  const firstContext = await browser.newContext();
+  const secondContext = await browser.newContext();
+  const firstPage = await firstContext.newPage();
+  const secondPage = await secondContext.newPage();
   const title = `독립 세션 경쟁 ${Date.now()}`;
 
   try {
-    await publishFromBrowser(humanPage, title);
-    await codexPage.goto("/task-pool");
-    const humanCard = humanPage.getByRole("article", { name: title });
-    const codexCard = codexPage.getByRole("article", { name: title });
-    await expect(humanCard).toBeVisible();
-    await expect(codexCard).toBeVisible();
+    await publishFromBrowser(firstPage, title);
+    await secondPage.goto("/task-pool");
+    const firstCard = firstPage.getByRole("article", { name: title });
+    const secondCard = secondPage.getByRole("article", { name: title });
+    await expect(firstCard).toBeVisible();
+    await expect(secondCard).toBeVisible();
 
     await Promise.allSettled([
-      humanCard.getByRole("button", { name: "가져가기" }).click(),
-      codexCard.getByRole("button", { name: "가져가기" }).click(),
+      firstCard.getByRole("button", { name: "가져가기" }).click(),
+      secondCard.getByRole("button", { name: "가져가기" }).click(),
     ]);
 
     const database = new Database(databaseFilename, { readonly: true });
@@ -78,24 +58,16 @@ test("human and Codex browser sessions compete and exactly one starts the task",
     const eventCount = database.prepare(`SELECT COUNT(*) count FROM task_events e
       JOIN tasks t ON t.id = e.task_id WHERE t.title = ? AND e.event_type = 'taken'`).get(title) as { count: number };
     database.close();
-    expect(["user-fixed", "user-codex"]).toContain(winner.assignee_id);
+    expect(winner.assignee_id).toBe("user-fixed");
     expect(eventCount.count).toBe(1);
 
-    const winnerPage = winner.assignee_id === "user-fixed" ? humanPage : codexPage;
-    const loserPage = winner.assignee_id === "user-fixed" ? codexPage : humanPage;
-    await winnerPage.goto("/my-work");
-    await loserPage.goto("/my-work");
-    await expect(winnerPage.getByRole("article", { name: title })).toContainText("가져감");
-    await expect(loserPage.getByRole("article", { name: title })).toHaveCount(0);
-
-    await winnerPage.getByRole("article", { name: title }).getByRole("button", { name: "작업 시작" }).click();
-    await expect(winnerPage.getByRole("article", { name: title })).toContainText("진행 중");
-    await expect(winnerPage.getByRole("article", { name: title })).toContainText(/시작 20\d\d/);
-    await winnerPage.reload();
-    await expect(winnerPage.getByRole("article", { name: title })).toContainText("진행 중");
+    await firstPage.goto("/my-work");
+    await secondPage.goto("/my-work");
+    await expect(firstPage.getByRole("article", { name: title })).toContainText("가져감");
+    await expect(secondPage.getByRole("article", { name: title })).toContainText("가져감");
   } finally {
-    await humanContext.close();
-    await codexContext.close();
+    await firstContext.close();
+    await secondContext.close();
   }
 });
 

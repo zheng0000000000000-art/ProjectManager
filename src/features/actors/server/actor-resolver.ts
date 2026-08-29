@@ -22,16 +22,11 @@ export type ActorResolutionInput = {
 };
 
 export function createActorResolver(repository: ActorRepository) {
-  return async ({ cookieActorId, headerActorId }: ActorResolutionInput): Promise<ActorContext> => {
+  return async ({ headerActorId }: ActorResolutionInput): Promise<ActorContext> => {
     if (headerActorId) {
       const actor = await repository.findActiveProjectActor(headerActorId, DEFAULT_PROJECT_ID);
       if (!actor) throw new ActorResolutionError("ACTOR_NOT_ALLOWED", "허용된 프로젝트 작업자가 아닙니다.");
       return actor;
-    }
-
-    if (cookieActorId) {
-      const actor = await repository.findActiveProjectActor(cookieActorId, DEFAULT_PROJECT_ID);
-      if (actor) return actor;
     }
 
     const fallback = await repository.findActiveProjectActor(HUMAN_USER_ID, DEFAULT_PROJECT_ID);
