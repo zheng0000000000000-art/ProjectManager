@@ -7,13 +7,14 @@ import { SqliteTaskRepository } from "@/features/tasks/data/sqlite-task-reposito
 import { SqliteScopeRepository } from "@/features/scope/data/sqlite-scope-repository";
 import { SqliteActorRepository } from "@/features/actors/data/sqlite-actor-repository";
 import { SqliteAuditRepository } from "@/features/audit/data/sqlite-audit-repository";
+import type { AuditRepository } from "@/features/audit/data/audit-repository";
 
 const shared = globalThis as typeof globalThis & {
   taskDatabase?: Database.Database;
   taskRepository?: SqliteTaskRepository;
   scopeRepository?: SqliteScopeRepository;
   actorRepository?: SqliteActorRepository;
-  auditRepository?: SqliteAuditRepository;
+  auditRepository?: AuditRepository;
 };
 
 export function getDatabase() {
@@ -42,7 +43,7 @@ export function getActorRepository() {
   return shared.actorRepository;
 }
 
-export function getAuditRepository() {
+export function getAuditRepository(): AuditRepository {
   shared.auditRepository ??= new SqliteAuditRepository(getDatabase());
   return shared.auditRepository;
 }

@@ -109,4 +109,25 @@ describe("SqliteAuditRepository", () => {
     expect(repository.listByRequestIdForTest("request-non-finite")).toEqual([]);
     expect(repository.listByRequestIdForTest("request-invalid-fields")).toEqual([]);
   });
+
+  it("rejects sparse field-name arrays before inserting an audit row", async () => {
+    const { repository } = setup();
+    const fieldNames = new Array<string>(1);
+
+    await expect(repository.appendFailure({
+      projectId: "project-default",
+      taskId: null,
+      actorId: null,
+      action: "task.take",
+      outcome: "failure",
+      errorCode: "ACTOR_REJECTED",
+      fromState: null,
+      toState: null,
+      requestId: "request-sparse-fields",
+      metadata: { fieldNames },
+      createdAt: "2026-08-29T15:00:00.000Z",
+    })).rejects.toThrow("Audit metadata fieldNames must be a string array");
+
+    expect(repository.listByRequestIdForTest("request-sparse-fields")).toEqual([]);
+  });
 });

@@ -38,7 +38,7 @@ function validateMetadata(metadata: unknown): SafeAuditMetadata {
         safeMetadata.expectedVersion = value;
         break;
       case "fieldNames":
-        if (!Array.isArray(value) || !value.every((fieldName) => typeof fieldName === "string")) {
+        if (!Array.isArray(value) || !Array.from(value).every((fieldName) => typeof fieldName === "string")) {
           throw new Error("Audit metadata fieldNames must be a string array");
         }
         safeMetadata.fieldNames = value;
