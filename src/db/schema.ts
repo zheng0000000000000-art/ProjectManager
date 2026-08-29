@@ -5,7 +5,8 @@ export function createSchema(database: Database.Database) {
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      actor_type TEXT NOT NULL DEFAULT 'human' CHECK(actor_type IN ('human', 'ai'))
     );
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
@@ -38,6 +39,7 @@ export function createSchema(database: Database.Database) {
       publication_state TEXT NOT NULL,
       work_status TEXT NOT NULL,
       assignee_id TEXT REFERENCES users(id),
+      started_at TEXT,
       version INTEGER NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -62,6 +64,13 @@ export function createSchema(database: Database.Database) {
       to_state TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS task_prerequisites (
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      prerequisite_task_id TEXT NOT NULL REFERENCES tasks(id),
+      resolved_at TEXT,
+      PRIMARY KEY(task_id, prerequisite_task_id),
+      CHECK(task_id <> prerequisite_task_id)
+    );
     CREATE INDEX IF NOT EXISTS tasks_pool_idx
       ON tasks(publication_state, work_status, assignee_id);
     CREATE INDEX IF NOT EXISTS tasks_assignee_idx
@@ -79,6 +88,12 @@ export function createSchema(database: Database.Database) {
   }
   if (!columns("tasks").has("project_id")) {
     database.exec("ALTER TABLE tasks ADD COLUMN project_id TEXT REFERENCES projects(id)");
+  }
+  if (!columns("users").has("actor_type")) {
+    database.exec("ALTER TABLE users ADD COLUMN actor_type TEXT NOT NULL DEFAULT 'human' CHECK(actor_type IN ('human', 'ai'))");
+  }
+  if (!columns("tasks").has("started_at")) {
+    database.exec("ALTER TABLE tasks ADD COLUMN started_at TEXT");
   }
   database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS work_types_project_id_idx
     ON work_types(project_id, id)`);

@@ -16,8 +16,29 @@ describe("seedDefaultProject", () => {
     seedDefaultProject(database);
 
     expect(database.prepare("SELECT COUNT(*) count FROM projects").get()).toEqual({ count: 1 });
-    expect(database.prepare("SELECT COUNT(*) count FROM project_members").get()).toEqual({ count: 1 });
+    expect(database.prepare("SELECT id, actor_type FROM users ORDER BY id").all()).toEqual([
+      { id: "user-codex", actor_type: "ai" },
+      { id: "user-fixed", actor_type: "human" },
+    ]);
+    expect(database.prepare("SELECT COUNT(*) count FROM project_members WHERE active = 1").get()).toEqual({ count: 2 });
     expect(database.prepare("SELECT COUNT(*) count FROM work_types").get()).toEqual({ count: 3 });
-    expect(database.prepare("SELECT COUNT(*) count FROM member_work_scopes WHERE active = 1").get()).toEqual({ count: 3 });
+    expect(database.prepare("SELECT COUNT(*) count FROM member_work_scopes WHERE active = 1").get()).toEqual({ count: 6 });
+    expect(database.prepare("PRAGMA table_info(tasks)").all()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "started_at" })]),
+    );
+  });
+
+  it("rejects a task that lists itself as a prerequisite", () => {
+    const database = new Database(":memory:");
+    databases.push(database);
+    createSchema(database);
+    seedDefaultProject(database);
+    database.prepare(`INSERT INTO tasks
+      (id, project_id, creator_id, publication_state, work_status, version, created_at, updated_at)
+      VALUES ('task-self', 'project-default', 'user-fixed', 'draft', 'open', 1, 'now', 'now')`).run();
+
+    expect(() => database.prepare(`INSERT INTO task_prerequisites
+      (task_id, prerequisite_task_id, resolved_at) VALUES ('task-self', 'task-self', NULL)`).run())
+      .toThrow();
   });
 });
