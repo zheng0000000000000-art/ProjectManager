@@ -4,13 +4,14 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getTaskRepository } from "@/db/client";
 import { createTaskCommands } from "./task-commands";
+import { getCurrentActor } from "@/features/actors/server/current-actor";
 
-const commands = () => createTaskCommands(getTaskRepository());
+const commands = async () => createTaskCommands(getTaskRepository(), await getCurrentActor());
 const toNumber = (value: FormDataEntryValue | null) => Number(value ?? 0);
 const refresh = () => { revalidatePath("/task-pool"); revalidatePath("/my-work"); };
 
 export async function createDraftAndRedirect() {
-  const result = await commands().createDraft();
+  const result = await (await commands()).createDraft();
   if (!result.ok) redirect(`/my-work?error=${encodeURIComponent(result.message)}`);
   redirect(`/tasks/${result.data.taskId}`);
 }
@@ -18,7 +19,7 @@ export async function createDraftAndRedirect() {
 export type PublishState = { message?: string; fieldErrors?: Record<string, string[]> };
 
 export async function publishTaskAction(_: PublishState, formData: FormData): Promise<PublishState> {
-  const result = await commands().publishTask({
+  const result = await (await commands()).publishTask({
     taskId: String(formData.get("taskId")), expectedVersion: toNumber(formData.get("expectedVersion")),
     title: String(formData.get("title") ?? ""), goal: String(formData.get("goal") ?? ""),
     workTypeId: String(formData.get("workTypeId") ?? ""),
@@ -30,21 +31,21 @@ export async function publishTaskAction(_: PublishState, formData: FormData): Pr
 }
 
 export async function takeTaskAction(formData: FormData) {
-  const result = await commands().takeTask({ taskId: String(formData.get("taskId")), expectedVersion: toNumber(formData.get("expectedVersion")) });
+  const result = await (await commands()).takeTask({ taskId: String(formData.get("taskId")), expectedVersion: toNumber(formData.get("expectedVersion")) });
   refresh();
   if (result.ok) redirect("/my-work");
   redirect(`/task-pool?error=${encodeURIComponent(result.message)}`);
 }
 
 export async function startTaskAction(formData: FormData) {
-  const result = await commands().startTask({ taskId: String(formData.get("taskId")), expectedVersion: toNumber(formData.get("expectedVersion")) });
+  const result = await (await commands()).startTask({ taskId: String(formData.get("taskId")), expectedVersion: toNumber(formData.get("expectedVersion")) });
   refresh();
   if (result.ok) redirect("/my-work");
   redirect(`/my-work?error=${encodeURIComponent(result.message)}`);
 }
 
 export async function returnTaskAction(formData: FormData) {
-  const result = await commands().returnTask({
+  const result = await (await commands()).returnTask({
     taskId: String(formData.get("taskId")),
     expectedVersion: toNumber(formData.get("expectedVersion")),
   });

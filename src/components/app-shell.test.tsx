@@ -1,12 +1,15 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { AppShell } from "./app-shell";
+
+const actor = { userId: "user-codex", projectId: "project-default", actorType: "ai" as const };
+afterEach(cleanup);
 
 describe("AppShell", () => {
   it("shows the three first-version destinations", () => {
     render(
-      <AppShell>
+      <AppShell actor={actor}>
         <main>내용</main>
       </AppShell>,
     );
@@ -23,5 +26,14 @@ describe("AppShell", () => {
       "href",
       "/tasks/new",
     );
+  });
+
+  it("shows the current worker and both loginless actor choices", () => {
+    render(<AppShell actor={actor}><main>내용</main></AppShell>);
+
+    expect(screen.getByLabelText("현재 작업자")).toHaveValue("user-codex");
+    expect(screen.getByRole("option", { name: "나 · 사람" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Codex · AI" })).toBeInTheDocument();
+    expect(screen.getByText("AI")).toBeInTheDocument();
   });
 });

@@ -1,12 +1,13 @@
 import { getTaskRepository } from "@/db/client";
 import { TaskCard } from "@/features/tasks/components/task-card";
 import { takeTaskAction } from "@/features/tasks/server/actions";
-import { FIXED_USER_ID } from "@/features/scope/domain/scope";
+import { getCurrentActor } from "@/features/actors/server/current-actor";
 
 export const dynamic = "force-dynamic";
 
 export default async function TaskPoolPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
-  const tasks = await getTaskRepository().listPool(FIXED_USER_ID);
+  const actor = await getCurrentActor();
+  const tasks = await getTaskRepository().listPool(actor);
   const { error } = await searchParams;
   return <main className="page">
     <header className="page-header"><div><p className="eyebrow">함께할 일</p><h1>작업 풀</h1><p>지금 기여할 수 있는 작업을 골라 가져가세요.</p></div></header>

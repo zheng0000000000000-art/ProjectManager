@@ -2,11 +2,13 @@ import Link from "next/link";
 import { getTaskRepository } from "@/db/client";
 import { TaskCard } from "@/features/tasks/components/task-card";
 import { returnTaskAction, startTaskAction } from "@/features/tasks/server/actions";
+import { getCurrentActor } from "@/features/actors/server/current-actor";
 
 export const dynamic = "force-dynamic";
 
 export default async function MyWorkPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
-  const tasks = await getTaskRepository().listForAssignee("user-fixed");
+  const actor = await getCurrentActor();
+  const tasks = await getTaskRepository().listForAssignee(actor);
   const { error } = await searchParams;
   const progress = tasks.filter((task) => task.workStatus === "in_progress");
   const taken = tasks.filter((task) => task.workStatus === "taken");

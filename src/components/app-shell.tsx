@@ -1,4 +1,6 @@
 import Link from "next/link";
+import type { ActorContext } from "@/features/actors/domain/actor";
+import { ActorSwitcher } from "@/features/actors/components/actor-switcher";
 
 const destinations = [
   { href: "/my-work", label: "내 작업" },
@@ -6,7 +8,7 @@ const destinations = [
   { href: "/tasks/new", label: "새 작업" },
 ];
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, actor }: { children: React.ReactNode; actor: ActorContext }) {
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -24,6 +26,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ))}
           </ul>
         </nav>
+        <ActorSwitcher actor={actor} />
         <div className="app-project-context">
           <span>현재 프로젝트</span>
           <strong>새 프로젝트</strong>
