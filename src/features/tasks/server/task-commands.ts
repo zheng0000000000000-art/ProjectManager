@@ -35,6 +35,10 @@ type TaskDomainErrorShape = {
 
 const domainErrorCodes = new Set(["VALIDATION_ERROR", "INVALID_TRANSITION"]);
 
+export function isValidExpectedVersion(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 function isTaskDomainError(error: unknown): error is TaskDomainErrorShape {
   if (typeof error !== "object" || error === null) return false;
   const candidate = error as { code?: unknown; message?: unknown; field?: unknown };
@@ -141,7 +145,7 @@ export function createTaskCommands(
       fieldNames: classified.audit.fieldNames,
       actorType: actor.actorType,
     };
-    if (expectedVersion !== undefined) metadata.expectedVersion = expectedVersion;
+    if (isValidExpectedVersion(expectedVersion)) metadata.expectedVersion = expectedVersion;
 
     try {
       await auditRepository.appendFailure({
@@ -169,6 +173,19 @@ export function createTaskCommands(
     operation: (createdAt: string) => Promise<TaskRecord>,
   ): Promise<CommandResult<{ taskId: string }>> => {
     const createdAt = context.clock();
+    if (expectedVersion !== undefined && !isValidExpectedVersion(expectedVersion)) {
+      const classified: ClassifiedFailure = {
+        result: {
+          ok: false,
+          code: "VALIDATION_ERROR",
+          message: "입력 내용을 확인해 주세요.",
+          fieldErrors: { expectedVersion: ["작업 버전을 확인해 주세요."] },
+        },
+        audit: { errorCode: "VALIDATION_ERROR", fieldNames: ["expectedVersion"] },
+      };
+      await appendFailure(action, taskId, undefined, createdAt, classified);
+      return classified.result;
+    }
     try {
       const task = await operation(createdAt);
       return { ok: true, data: { taskId: task.id } };

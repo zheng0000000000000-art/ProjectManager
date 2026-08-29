@@ -4,7 +4,7 @@ import { getActorRepository, getAuditRepository, getTaskRepository } from "@/db/
 import { ACTOR_COOKIE_NAME, ACTOR_HEADER_NAME, createActorResolver } from "@/features/actors/server/actor-resolver";
 import { createAuditedActorResolver } from "@/features/audit/server/audited-actor-resolver";
 import type { TaskAuditAction } from "@/features/audit/domain/audit-entry";
-import { createTaskCommands, type TaskCommandContext } from "./task-commands";
+import { createTaskCommands, isValidExpectedVersion, type TaskCommandContext } from "./task-commands";
 
 export async function getTaskMutationCommands(action: TaskAuditAction, expectedVersion?: number) {
   const context: TaskCommandContext = {
@@ -19,7 +19,7 @@ export async function getTaskMutationCommands(action: TaskAuditAction, expectedV
     context,
   ).resolveActorForMutation({
     action,
-    expectedVersion,
+    expectedVersion: isValidExpectedVersion(expectedVersion) ? expectedVersion : undefined,
     cookieActorId: cookieStore.get(ACTOR_COOKIE_NAME)?.value,
     headerActorId: headerStore.get(ACTOR_HEADER_NAME),
   });

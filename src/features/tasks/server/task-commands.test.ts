@@ -177,6 +177,47 @@ describe("task commands", () => {
     ]);
   });
 
+  it.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["fractional", 1.5],
+    ["negative", -1],
+  ])("rejects an unsafe %s expected version before repository mutation", async (label, expectedVersion) => {
+    const fixture = setup();
+    const taskId = await preparePublished(fixture, humanActor, `unsafe-version-${label}`);
+    const beforeTask = await fixture.tasks.findById(taskId);
+    const beforeEventCount = await fixture.tasks.countEvents(taskId);
+    const requestId = `request-unsafe-version-${label}`;
+
+    const result = await commandsFor(fixture, humanActor, requestId).takeTask({
+      taskId,
+      expectedVersion,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "VALIDATION_ERROR",
+      message: "입력 내용을 확인해 주세요.",
+      fieldErrors: { expectedVersion: ["작업 버전을 확인해 주세요."] },
+    });
+    expect(await fixture.tasks.findById(taskId)).toEqual(beforeTask);
+    expect(await fixture.tasks.countEvents(taskId)).toBe(beforeEventCount);
+    expect(fixture.audits.listByRequestIdForTest(requestId)).toEqual([
+      expect.objectContaining({
+        taskId,
+        action: "task.take",
+        outcome: "failure",
+        errorCode: "VALIDATION_ERROR",
+        fromState: "open",
+        toState: null,
+        metadata: {
+          fieldNames: ["expectedVersion"],
+          actorType: "human",
+        },
+      }),
+    ]);
+  });
+
   it("returns a taken task to the pool with one event and one success audit", async () => {
     const fixture = setup();
     const taskId = await prepareTaken(fixture, humanActor, "return");
@@ -347,7 +388,7 @@ describe("task commands", () => {
       resultCode: "VERSION_CONFLICT",
       auditCode: "VERSION_CONFLICT",
       fieldNames: [],
-      expectedVersion: 0,
+      expectedVersion: 2,
       async attempt(fixture) {
         const taskId = await prepareDraft(fixture, humanActor, "version");
         return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).publishTask({
