@@ -1,5 +1,6 @@
 import { TaskDomainError } from "./task-errors";
 import type { PublishTaskValues, TaskRecord } from "./task";
+import type { ActorContext } from "@/features/actors/domain/actor";
 
 function requireText(value: string, field: string, message: string) {
   const normalized = value.trim();
@@ -97,6 +98,62 @@ export function start(task: TaskRecord, actorId: string, startedAt: string): Tas
     ...task,
     workStatus: "in_progress",
     startedAt,
+    version: task.version + 1,
+  };
+}
+
+export function complete(
+  task: TaskRecord,
+  actor: ActorContext,
+  completionSummary: string,
+  completedAt: string,
+): TaskRecord {
+  if (actor.actorType !== "human") {
+    throw new TaskDomainError(
+      "INVALID_TRANSITION",
+      "사람 작업자만 작업을 완료할 수 있습니다.",
+    );
+  }
+
+  if (task.assigneeId !== actor.userId) {
+    throw new TaskDomainError(
+      "INVALID_TRANSITION",
+      "담당자만 작업을 완료할 수 있습니다.",
+    );
+  }
+
+  if (task.workStatus !== "in_progress") {
+    throw new TaskDomainError(
+      "INVALID_TRANSITION",
+      "진행 중인 작업만 완료할 수 있습니다.",
+    );
+  }
+
+  if (!task.startedAt) {
+    throw new TaskDomainError(
+      "INVALID_TRANSITION",
+      "시작 시간이 기록된 작업만 완료할 수 있습니다.",
+    );
+  }
+
+  if (task.completedAt !== null || task.completionSummary !== null) {
+    throw new TaskDomainError(
+      "INVALID_TRANSITION",
+      "완료 정보가 이미 기록된 작업입니다.",
+    );
+  }
+
+  const normalizedSummary = requireText(
+    completionSummary,
+    "completionSummary",
+    "완료 결과를 입력해 주세요.",
+  );
+
+  return {
+    ...task,
+    workStatus: "completed",
+    completedAt,
+    completionSummary: normalizedSummary,
     version: task.version + 1,
   };
 }

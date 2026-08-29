@@ -40,6 +40,8 @@ export function createSchema(database: Database.Database) {
       work_status TEXT NOT NULL,
       assignee_id TEXT REFERENCES users(id),
       started_at TEXT,
+      completed_at TEXT,
+      completion_summary TEXT,
       version INTEGER NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -71,12 +73,32 @@ export function createSchema(database: Database.Database) {
       PRIMARY KEY(task_id, prerequisite_task_id),
       CHECK(task_id <> prerequisite_task_id)
     );
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      task_id TEXT REFERENCES tasks(id),
+      actor_id TEXT REFERENCES users(id),
+      action TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure')),
+      error_code TEXT,
+      from_state TEXT,
+      to_state TEXT,
+      request_id TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS tasks_pool_idx
       ON tasks(publication_state, work_status, assignee_id);
     CREATE INDEX IF NOT EXISTS tasks_assignee_idx
       ON tasks(assignee_id, work_status);
     CREATE INDEX IF NOT EXISTS member_scope_lookup_idx
       ON member_work_scopes(member_id, work_type_id, active);
+    CREATE INDEX IF NOT EXISTS audit_logs_task_created_idx
+      ON audit_logs(task_id, created_at);
+    CREATE INDEX IF NOT EXISTS audit_logs_request_idx
+      ON audit_logs(request_id);
+    CREATE INDEX IF NOT EXISTS audit_logs_project_created_idx
+      ON audit_logs(project_id, created_at);
   `);
 
   // Upgrade databases created by the earlier prototype before project scope existed.
@@ -94,6 +116,12 @@ export function createSchema(database: Database.Database) {
   }
   if (!columns("tasks").has("started_at")) {
     database.exec("ALTER TABLE tasks ADD COLUMN started_at TEXT");
+  }
+  if (!columns("tasks").has("completed_at")) {
+    database.exec("ALTER TABLE tasks ADD COLUMN completed_at TEXT");
+  }
+  if (!columns("tasks").has("completion_summary")) {
+    database.exec("ALTER TABLE tasks ADD COLUMN completion_summary TEXT");
   }
   database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS work_types_project_id_idx
     ON work_types(project_id, id)`);

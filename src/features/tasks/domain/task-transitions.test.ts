@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import type { ActorContext } from "@/features/actors/domain/actor";
 import type { TaskRecord } from "./task";
-import { publish, returnToPool, start, take } from "./task-transitions";
+import { complete, publish, returnToPool, start, take } from "./task-transitions";
 
 const draft: TaskRecord = {
   id: "task-1",
@@ -15,7 +16,21 @@ const draft: TaskRecord = {
   workStatus: "open",
   assigneeId: null,
   startedAt: null,
+  completedAt: null,
+  completionSummary: null,
   version: 1,
+};
+
+const humanActor: ActorContext = {
+  userId: "user-fixed",
+  projectId: "project-default",
+  actorType: "human",
+};
+
+const aiActor: ActorContext = {
+  userId: "user-codex",
+  projectId: "project-default",
+  actorType: "ai",
 };
 
 const validInput = {
@@ -106,5 +121,61 @@ describe("task transitions", () => {
       "가져간 작업만 시작할 수 있습니다.",
     );
     expect(started.startedAt).toBe("2026-08-29T12:00:00.000Z");
+  });
+
+  it("lets the human assignee complete a started task with a summary", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    const completed = complete(runningTask, humanActor, "검증을 마쳤다", "2026-08-29T15:00:00.000Z");
+
+    expect(completed).toMatchObject({
+      workStatus: "completed",
+      completedAt: "2026-08-29T15:00:00.000Z",
+      completionSummary: "검증을 마쳤다",
+      version: runningTask.version + 1,
+    });
+  });
+
+  it("rejects completion by an AI actor", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(() => complete(runningTask, aiActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("사람 작업자");
+  });
+
+  it("rejects completion without a result summary", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(() => complete(runningTask, humanActor, "   ", "2026-08-29T15:00:00.000Z")).toThrow("완료 결과");
+  });
+
+  it("rejects completion by a non-assignee", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(() => complete({ ...runningTask, assigneeId: "someone-else" }, humanActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("담당자");
+  });
+
+  it("rejects completion when the task is not in progress", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(() => complete({ ...runningTask, workStatus: "completed" }, humanActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("진행 중");
+  });
+
+  it("rejects completion before a task has started", () => {
+    const takenTask = take(publish(draft, validInput), humanActor.userId);
+
+    expect(() => complete({ ...takenTask, workStatus: "in_progress" }, humanActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("시작");
+  });
+
+  it("rejects completion when completion fields already have values", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(() => complete({ ...runningTask, completedAt: "2026-08-29T14:00:00.000Z" }, humanActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("완료 정보");
+    expect(() => complete({ ...runningTask, completionSummary: "이미 기록됨" }, humanActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("완료 정보");
+  });
+
+  it("trims the completion summary", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(complete(runningTask, humanActor, "  결과  ", "2026-08-29T15:00:00.000Z").completionSummary).toBe("결과");
   });
 });

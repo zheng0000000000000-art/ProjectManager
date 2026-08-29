@@ -1,6 +1,6 @@
 export type PublicationState = "draft" | "published";
 
-export type WorkStatus = "open" | "taken" | "in_progress";
+export type WorkStatus = "open" | "taken" | "in_progress" | "completed";
 
 export interface TaskRecord {
   id: string;
@@ -14,6 +14,8 @@ export interface TaskRecord {
   workStatus: WorkStatus;
   assigneeId: string | null;
   startedAt: string | null;
+  completedAt: string | null;
+  completionSummary: string | null;
   version: number;
 }
 

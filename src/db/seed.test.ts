@@ -24,7 +24,27 @@ describe("seedDefaultProject", () => {
     expect(database.prepare("SELECT COUNT(*) count FROM work_types").get()).toEqual({ count: 3 });
     expect(database.prepare("SELECT COUNT(*) count FROM member_work_scopes WHERE active = 1").get()).toEqual({ count: 6 });
     expect(database.prepare("PRAGMA table_info(tasks)").all()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: "started_at" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ name: "started_at" }),
+        expect.objectContaining({ name: "completed_at" }),
+        expect.objectContaining({ name: "completion_summary" }),
+      ]),
+    );
+    expect(database.prepare("PRAGMA table_info(audit_logs)").all()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "id" }),
+        expect.objectContaining({ name: "project_id" }),
+        expect.objectContaining({ name: "task_id" }),
+        expect.objectContaining({ name: "actor_id" }),
+        expect.objectContaining({ name: "action" }),
+        expect.objectContaining({ name: "outcome" }),
+        expect.objectContaining({ name: "error_code" }),
+        expect.objectContaining({ name: "from_state" }),
+        expect.objectContaining({ name: "to_state" }),
+        expect.objectContaining({ name: "request_id" }),
+        expect.objectContaining({ name: "metadata_json" }),
+        expect.objectContaining({ name: "created_at" }),
+      ]),
     );
   });
 
