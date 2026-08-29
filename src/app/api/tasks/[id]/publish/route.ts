@@ -1,22 +1,25 @@
-import { z } from "zod";
 import { apiErrorResponse, commandResultResponse, invalidJsonResponse } from "@/features/tasks/server/http";
-import { getTaskMutationCommands } from "@/features/tasks/server/task-mutation-commands";
-
-const publishBody = z.object({
-  expectedVersion: z.number().int().positive(),
-  title: z.string(),
-  goal: z.string(),
-  workTypeId: z.string(),
-  estimatedBlocks: z.number().int(),
-  deadline: z.string().nullable().optional(),
-});
+import { getTaskMutationRequest } from "@/features/tasks/server/task-mutation-commands";
+import {
+  parseTaskMutationJson,
+  publishTaskBodySchema,
+} from "@/features/tasks/server/task-request-validation";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const parsed = publishBody.safeParse(await request.json());
-    if (!parsed.success) return invalidJsonResponse();
+    const mutation = await getTaskMutationRequest("task.publish");
     const { id } = await context.params;
-    const result = await (await getTaskMutationCommands("task.publish", parsed.data.expectedVersion)).publishTask({
+    const parsed = await parseTaskMutationJson(request, publishTaskBodySchema, "task.publish");
+    if (!parsed.ok) {
+      await mutation.recordValidationFailure({
+        taskId: id,
+        expectedVersion: parsed.expectedVersion,
+        fieldNames: parsed.fieldNames,
+      });
+      return invalidJsonResponse();
+    }
+    const commands = await mutation.getCommands(parsed.data.expectedVersion);
+    const result = await commands.publishTask({
       taskId: id,
       ...parsed.data,
       deadline: parsed.data.deadline ?? null,

@@ -4,8 +4,13 @@ import type { SafeAuditMetadata, TaskAuditAction } from "@/features/audit/domain
 import type { SuccessAuditInput, TaskRepository } from "../data/task-repository";
 import { isTaskRepositoryError } from "../data/task-repository";
 import type { TaskRecord } from "../domain/task";
+import type { TaskDomainReason } from "../domain/task-errors";
 import { complete, publish, returnToPool, start, take } from "../domain/task-transitions";
 import type { CommandErrorCode, CommandResult } from "./command-result";
+import { TaskFailureAuditor } from "./task-failure-auditor";
+import { isValidExpectedVersion } from "./task-mutation-validation";
+
+export { isValidExpectedVersion } from "./task-mutation-validation";
 
 type VersionedTaskInput = { taskId: string; expectedVersion: number };
 export type PublishTaskInput = VersionedTaskInput & {
@@ -29,21 +34,26 @@ type ClassifiedFailure = {
 
 type TaskDomainErrorShape = {
   code: "VALIDATION_ERROR" | "INVALID_TRANSITION";
+  reason: TaskDomainReason;
   message: string;
   field?: string;
 };
 
 const domainErrorCodes = new Set(["VALIDATION_ERROR", "INVALID_TRANSITION"]);
-
-export function isValidExpectedVersion(value: number | undefined): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0;
-}
+const domainErrorReasons = new Set<TaskDomainReason>([
+  "INVALID_FIELD",
+  "ACTOR_TYPE_REQUIRED",
+  "ASSIGNEE_REQUIRED",
+  "STATE_REQUIRED",
+]);
 
 function isTaskDomainError(error: unknown): error is TaskDomainErrorShape {
   if (typeof error !== "object" || error === null) return false;
-  const candidate = error as { code?: unknown; message?: unknown; field?: unknown };
+  const candidate = error as { code?: unknown; reason?: unknown; message?: unknown; field?: unknown };
   return typeof candidate.code === "string"
     && domainErrorCodes.has(candidate.code)
+    && typeof candidate.reason === "string"
+    && domainErrorReasons.has(candidate.reason as TaskDomainReason)
     && typeof candidate.message === "string"
     && (candidate.field === undefined || typeof candidate.field === "string");
 }
@@ -52,10 +62,10 @@ function classifiedDomainCode(error: TaskDomainErrorShape): {
   resultCode: CommandErrorCode;
   auditCode: string;
 } {
-  if (error.message.includes("사람 작업자만")) {
+  if (error.reason === "ACTOR_TYPE_REQUIRED") {
     return { resultCode: "ACTOR_NOT_ALLOWED", auditCode: "ACTOR_REJECTED" };
   }
-  if (error.message.includes("담당자만")) {
+  if (error.reason === "ASSIGNEE_REQUIRED") {
     return { resultCode: "OWNERSHIP_REQUIRED", auditCode: "OWNERSHIP_REQUIRED" };
   }
   return { resultCode: "INVALID_TRANSITION", auditCode: "INVALID_TRANSITION" };
@@ -109,6 +119,7 @@ export function createTaskCommands(
   actor: ActorContext,
   context: TaskCommandContext,
 ) {
+  const failureAuditor = new TaskFailureAuditor(repository, auditRepository, context.requestId);
   const successAudit = (
     action: TaskAuditAction,
     taskId: string | null,
@@ -124,47 +135,6 @@ export function createTaskCommands(
     metadata,
     createdAt,
   });
-
-  const appendFailure = async (
-    action: TaskAuditAction,
-    taskId: string | null,
-    expectedVersion: number | undefined,
-    createdAt: string,
-    classified: ClassifiedFailure,
-  ) => {
-    let task: TaskRecord | null = null;
-    if (taskId) {
-      try {
-        task = await repository.findById(taskId);
-      } catch {
-        task = null;
-      }
-    }
-
-    const metadata: SafeAuditMetadata = {
-      fieldNames: classified.audit.fieldNames,
-      actorType: actor.actorType,
-    };
-    if (isValidExpectedVersion(expectedVersion)) metadata.expectedVersion = expectedVersion;
-
-    try {
-      await auditRepository.appendFailure({
-        projectId: actor.projectId,
-        taskId: task?.id ?? null,
-        actorId: actor.userId,
-        action,
-        outcome: "failure",
-        errorCode: classified.audit.errorCode,
-        fromState: task?.workStatus ?? null,
-        toState: null,
-        requestId: context.requestId,
-        metadata,
-        createdAt,
-      });
-    } catch (auditError) {
-      console.error("Audit persistence failed", auditError);
-    }
-  };
 
   const execute = async (
     action: TaskAuditAction,
@@ -183,7 +153,14 @@ export function createTaskCommands(
         },
         audit: { errorCode: "VALIDATION_ERROR", fieldNames: ["expectedVersion"] },
       };
-      await appendFailure(action, taskId, undefined, createdAt, classified);
+      await failureAuditor.append({
+        action,
+        taskId,
+        actor,
+        errorCode: classified.audit.errorCode,
+        fieldNames: classified.audit.fieldNames,
+        createdAt,
+      });
       return classified.result;
     }
     try {
@@ -191,7 +168,15 @@ export function createTaskCommands(
       return { ok: true, data: { taskId: task.id } };
     } catch (error) {
       const classified = classifyFailure(error);
-      await appendFailure(action, taskId, expectedVersion, createdAt, classified);
+      await failureAuditor.append({
+        action,
+        taskId,
+        actor,
+        errorCode: classified.audit.errorCode,
+        expectedVersion,
+        fieldNames: classified.audit.fieldNames,
+        createdAt,
+      });
       return classified.result;
     }
   };

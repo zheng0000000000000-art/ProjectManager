@@ -160,6 +160,17 @@ describe("task transitions", () => {
     expect(() => complete({ ...runningTask, workStatus: "completed" }, humanActor, "결과", "2026-08-29T15:00:00.000Z")).toThrow("진행 중");
   });
 
+  it("rejects completion for a draft-shaped task even when it is in progress", () => {
+    const runningTask = start(take(publish(draft, validInput), humanActor.userId), humanActor.userId, "2026-08-29T12:00:00.000Z");
+
+    expect(() => complete(
+      { ...runningTask, publicationState: "draft" },
+      humanActor,
+      "결과",
+      "2026-08-29T15:00:00.000Z",
+    )).toThrow("공개된 작업만 완료할 수 있습니다.");
+  });
+
   it("rejects completion before a task has started", () => {
     const takenTask = take(publish(draft, validInput), humanActor.userId);
 

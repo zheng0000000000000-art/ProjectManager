@@ -84,6 +84,8 @@ export function start(task: TaskRecord, actorId: string, startedAt: string): Tas
     throw new TaskDomainError(
       "INVALID_TRANSITION",
       "담당자만 작업을 시작할 수 있습니다.",
+      undefined,
+      "ASSIGNEE_REQUIRED",
     );
   }
 
@@ -112,6 +114,8 @@ export function complete(
     throw new TaskDomainError(
       "INVALID_TRANSITION",
       "사람 작업자만 작업을 완료할 수 있습니다.",
+      undefined,
+      "ACTOR_TYPE_REQUIRED",
     );
   }
 
@@ -119,6 +123,15 @@ export function complete(
     throw new TaskDomainError(
       "INVALID_TRANSITION",
       "담당자만 작업을 완료할 수 있습니다.",
+      undefined,
+      "ASSIGNEE_REQUIRED",
+    );
+  }
+
+  if (task.publicationState !== "published") {
+    throw new TaskDomainError(
+      "INVALID_TRANSITION",
+      "공개된 작업만 완료할 수 있습니다.",
     );
   }
 
@@ -163,6 +176,8 @@ export function returnToPool(task: TaskRecord, actorId: string): TaskRecord {
     throw new TaskDomainError(
       "INVALID_TRANSITION",
       "담당자만 작업을 돌려놓을 수 있습니다.",
+      undefined,
+      "ASSIGNEE_REQUIRED",
     );
   }
 

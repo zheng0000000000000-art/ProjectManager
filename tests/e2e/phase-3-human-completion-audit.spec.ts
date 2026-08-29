@@ -103,6 +103,174 @@ test("global setup recreates the Phase 3 database without audit history", () => 
   }
 });
 
+test("malformed API mutations return validation errors and write one safe audit", async ({ request }) => {
+  const draftCreated = await apiJson(request, "post", "/api/tasks", "user-fixed");
+  expect(draftCreated.response.status()).toBe(201);
+  const draftTaskId = (draftCreated.body.data as { taskId: string }).taskId;
+  const runningTaskId = await createRunningTask(
+    request,
+    "user-fixed",
+    `요청 검증 감사 ${Date.now()}`,
+  );
+  const database = new Database(databaseFilename, { readonly: true });
+  const taskIds = [draftTaskId, runningTaskId].sort();
+  const taskRowsBefore = database.prepare(`SELECT * FROM tasks WHERE id IN (?, ?) ORDER BY id`)
+    .all(...taskIds);
+  const eventRowsBefore = database.prepare(`SELECT * FROM task_events
+    WHERE task_id IN (?, ?) ORDER BY task_id, created_at, id`).all(...taskIds);
+  const rawMarker = `raw-request-${crypto.randomUUID()}`;
+  const cases: Array<{
+    name: string;
+    action: "task.publish" | "task.take" | "task.start" | "task.complete";
+    url: string;
+    data?: unknown;
+    raw?: string;
+    fieldNames: string[];
+    expectedVersion?: number;
+    actorId?: string;
+  }> = [
+    {
+      name: "missing version",
+      action: "task.complete",
+      url: `/api/tasks/${runningTaskId}/complete`,
+      data: { completionSummary: "완료" },
+      fieldNames: ["expectedVersion"],
+    },
+    {
+      name: "mistyped version",
+      action: "task.take",
+      url: `/api/tasks/${runningTaskId}/take`,
+      data: { expectedVersion: rawMarker },
+      fieldNames: ["expectedVersion"],
+    },
+    {
+      name: "fractional version",
+      action: "task.start",
+      url: `/api/tasks/${runningTaskId}/start`,
+      data: { expectedVersion: 1.5 },
+      fieldNames: ["expectedVersion"],
+    },
+    {
+      name: "nonpositive version",
+      action: "task.take",
+      url: `/api/tasks/${runningTaskId}/take`,
+      data: { expectedVersion: 0 },
+      fieldNames: ["expectedVersion"],
+    },
+    {
+      name: "wrong publish field type",
+      action: "task.publish",
+      url: `/api/tasks/${draftTaskId}/publish`,
+      data: {
+        expectedVersion: 1,
+        title: { rawMarker },
+        goal: "요청 검증",
+        workTypeId: "work-development",
+        estimatedBlocks: 1,
+        deadline: null,
+      },
+      fieldNames: ["title"],
+      expectedVersion: 1,
+    },
+    {
+      name: "wrong completion field type",
+      action: "task.complete",
+      url: `/api/tasks/${runningTaskId}/complete`,
+      data: { expectedVersion: 4, completionSummary: { rawMarker } },
+      fieldNames: ["completionSummary"],
+      expectedVersion: 4,
+    },
+    ...([
+      ["task.publish", `/api/tasks/${draftTaskId}/publish`],
+      ["task.take", `/api/tasks/${runningTaskId}/take`],
+      ["task.start", `/api/tasks/${runningTaskId}/start`],
+      ["task.complete", `/api/tasks/${runningTaskId}/complete`],
+    ] as const).map(([action, url]) => ({
+      name: `${action} malformed JSON`,
+      action,
+      url,
+      raw: `{"rawMarker":"${rawMarker}"`,
+      fieldNames: [],
+    })),
+    {
+      name: "malformed JSON preserves validation precedence over an untrusted actor",
+      action: "task.take",
+      url: `/api/tasks/${runningTaskId}/take`,
+      raw: `{"rawMarker":"${rawMarker}"`,
+      fieldNames: [],
+      actorId: rawMarker,
+    },
+  ];
+
+  try {
+    for (const testCase of cases) {
+      const knownAuditIds = new Set(
+        (database.prepare("SELECT id FROM audit_logs").all() as Array<{ id: string }>)
+          .map((audit) => audit.id),
+      );
+      const response = await request.post(testCase.url, {
+        headers: {
+          "x-project-actor": testCase.actorId ?? "user-fixed",
+          ...(testCase.raw === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(testCase.raw === undefined ? { data: testCase.data } : { data: testCase.raw }),
+      });
+
+      expect(response.status(), testCase.name).toBe(400);
+      expect(await response.json(), testCase.name).toMatchObject({
+        ok: false,
+        code: "VALIDATION_ERROR",
+      });
+      const newAudits = (database.prepare(`SELECT id, project_id, task_id, actor_id, action,
+        outcome, error_code, from_state, to_state, request_id, metadata_json
+        FROM audit_logs ORDER BY created_at, id`).all() as Array<{
+          id: string;
+          project_id: string;
+          task_id: string | null;
+          actor_id: string | null;
+          action: string;
+          outcome: string;
+          error_code: string | null;
+          from_state: string | null;
+          to_state: string | null;
+          request_id: string;
+          metadata_json: string;
+        }>).filter((audit) => !knownAuditIds.has(audit.id));
+      expect(newAudits, testCase.name).toHaveLength(1);
+      expect(newAudits[0], testCase.name).toMatchObject({
+        project_id: "project-default",
+        actor_id: null,
+        action: testCase.action,
+        outcome: "failure",
+        error_code: "VALIDATION_ERROR",
+        to_state: null,
+      });
+      expect(database.prepare("SELECT COUNT(*) count FROM audit_logs WHERE request_id = ?")
+        .get(newAudits[0].request_id), testCase.name).toEqual({ count: 1 });
+      const metadata = JSON.parse(newAudits[0].metadata_json) as Record<string, unknown>;
+      expect(metadata, testCase.name).toEqual({
+        ...(testCase.expectedVersion === undefined
+          ? {}
+          : { expectedVersion: testCase.expectedVersion }),
+        fieldNames: testCase.fieldNames,
+      });
+      expect(Object.keys(metadata).sort(), testCase.name)
+        .toEqual((testCase.expectedVersion === undefined
+          ? ["fieldNames"]
+          : ["expectedVersion", "fieldNames"]).sort());
+      expect(newAudits[0].metadata_json, testCase.name).not.toContain(rawMarker);
+    }
+
+    expect(database.prepare(`SELECT * FROM tasks WHERE id IN (?, ?) ORDER BY id`)
+      .all(...taskIds)).toEqual(taskRowsBefore);
+    expect(database.prepare(`SELECT * FROM task_events
+      WHERE task_id IN (?, ?) ORDER BY task_id, created_at, id`).all(...taskIds))
+      .toEqual(eventRowsBefore);
+  } finally {
+    database.close();
+  }
+});
+
 test("human completion persists while audits stay internal", async ({ page }) => {
   const title = `사람 완료 감사 ${Date.now()}`;
   const completionSummary = "브라우저에서 완료 결과와 감사 분리를 확인했다";

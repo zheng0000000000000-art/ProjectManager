@@ -434,6 +434,7 @@ describe("task commands", () => {
     vi.spyOn(fixture.tasks, "runCommand").mockRejectedValue({
       name: "TaskDomainError",
       code: "VALIDATION_ERROR",
+      reason: "INVALID_FIELD",
       message: "완료 결과를 입력해 주세요.",
       field: "completionSummary",
     });
@@ -456,6 +457,87 @@ describe("task commands", () => {
         metadata: {
           expectedVersion: 4,
           fieldNames: ["completionSummary"],
+          actorType: "human",
+        },
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      reason: "ACTOR_TYPE_REQUIRED",
+      resultCode: "ACTOR_NOT_ALLOWED",
+      auditCode: "ACTOR_REJECTED",
+    },
+    {
+      reason: "ASSIGNEE_REQUIRED",
+      resultCode: "OWNERSHIP_REQUIRED",
+      auditCode: "OWNERSHIP_REQUIRED",
+    },
+  ])("classifies a cross-bundle $reason without inspecting translated messages", async ({
+    reason,
+    resultCode,
+    auditCode,
+  }) => {
+    const fixture = setup();
+    const taskId = await prepareRunning(fixture, humanActor, `structured-${reason}`);
+    vi.spyOn(fixture.tasks, "runCommand").mockRejectedValue({
+      name: "TaskDomainError",
+      code: "INVALID_TRANSITION",
+      reason,
+      message: "translated domain failure",
+    });
+    const requestId = `request-structured-${reason}`;
+
+    const result = await commandsFor(fixture, humanActor, requestId).completeTask({
+      taskId,
+      expectedVersion: 4,
+      completionSummary: "완료",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: resultCode });
+    expect(fixture.audits.listByRequestIdForTest(requestId)).toEqual([
+      expect.objectContaining({
+        action: "task.complete",
+        outcome: "failure",
+        errorCode: auditCode,
+      }),
+    ]);
+  });
+
+  it("rolls back a command whose success audit is rejected and stores one safe failure audit", async () => {
+    const fixture = setup();
+    const taskId = await prepareRunning(fixture, humanActor, "success-audit-storage");
+    const before = await fixture.tasks.findById(taskId);
+    const eventCount = await fixture.tasks.countEvents(taskId);
+    fixture.database.exec(`CREATE TEMP TRIGGER reject_success_audit BEFORE INSERT ON audit_logs
+      WHEN NEW.outcome = 'success' BEGIN SELECT RAISE(ABORT, 'forced success audit failure'); END`);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const result = await commandsFor(fixture, humanActor, "request-success-audit-storage").completeTask({
+      taskId,
+      expectedVersion: 4,
+      completionSummary: "원자적으로 완료한다",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "STORAGE_ERROR",
+      message: "작업을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    });
+    expect(await fixture.tasks.findById(taskId)).toEqual(before);
+    expect(await fixture.tasks.countEvents(taskId)).toBe(eventCount);
+    expect(fixture.audits.listByRequestIdForTest("request-success-audit-storage")).toEqual([
+      expect.objectContaining({
+        taskId,
+        action: "task.complete",
+        outcome: "failure",
+        errorCode: "STORAGE_ERROR",
+        fromState: "in_progress",
+        toState: null,
+        metadata: {
+          expectedVersion: 4,
+          fieldNames: [],
           actorType: "human",
         },
       }),
