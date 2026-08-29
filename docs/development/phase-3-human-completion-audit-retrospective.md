@@ -64,3 +64,10 @@ The browser runner emitted repeated `NO_COLOR`/`FORCE_COLOR` environment warning
 - Fix: both `/api/my-work` and `/api/task-pool` responses are serialized after parsing and checked for the exact quoted property names `request_id`, `metadata_json`, `requestId`, `auditLogs`, and `metadata`. The target-task presence and per-task safe-key allowlists remain in place; no broad `audit` substring check was added.
 - Focused evidence used Node `v22.14.0`, explicitly recreated the database, and invoked the Playwright CLI directly with `tests/e2e/phase-3-human-completion-audit.spec.ts`. The runner reported exactly 3 tests and all 3 passed.
 - Full E2E verification then reported 16 passed and 0 failed.
+
+## Fix Round 3 — Structural Response Privacy
+
+- Evidence: the whole-response denylist still depended on enumerating audit aliases and did not name `audit_logs`, `audits`, or `auditEntries`.
+- Fix: both public task reads now require exactly `ok` and `data` at the response top level, exactly `tasks` inside `data`, and the existing exact safe-key set on every task object. Any future audit container alias at those response levels fails structurally without expanding a denylist.
+- The completed target and known open task presence assertions remain unchanged.
+- Fresh Node `v22.14.0` verification reported exactly 3/3 tests from the directly invoked Phase 3 file and 16/16 tests from the full E2E suite.

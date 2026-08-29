@@ -151,17 +151,13 @@ test("human completion persists while audits stay internal", async ({ page }) =>
       headers: { "x-project-actor": "user-fixed" },
     });
     expect(response.ok()).toBe(true);
-    const body = await response.json() as { data: { tasks: Array<Record<string, unknown> & { id: string }> } };
-    const responseJson = JSON.stringify(body);
-    for (const forbiddenAuditKey of [
-      "request_id",
-      "metadata_json",
-      "requestId",
-      "auditLogs",
-      "metadata",
-    ]) {
-      expect(responseJson).not.toContain(`"${forbiddenAuditKey}"`);
-    }
+    const body = await response.json() as {
+      ok: boolean;
+      data: { tasks: Array<Record<string, unknown> & { id: string }> };
+    };
+    expect(Object.keys(body).sort()).toEqual(["data", "ok"]);
+    expect(body.ok).toBe(true);
+    expect(Object.keys(body.data)).toEqual(["tasks"]);
     expect(body.data.tasks.map((task) => task.id)).toContain(expectedTaskId);
     for (const task of body.data.tasks) {
       expect(Object.keys(task).sort()).toEqual([...safeTaskKeys].sort());
