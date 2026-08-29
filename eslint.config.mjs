@@ -10,6 +10,7 @@ const eslintConfig = defineConfig([
     // Default ignores of eslint-config-next:
     ".next/**",
     ".next-playwright/**",
+    ".worktrees/**",
     "out/**",
     "build/**",
     "scaffold-temp/**",
