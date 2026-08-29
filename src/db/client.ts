@@ -5,11 +5,13 @@ import { createSchema } from "./schema";
 import { seedDefaultProject } from "./seed";
 import { SqliteTaskRepository } from "@/features/tasks/data/sqlite-task-repository";
 import { SqliteScopeRepository } from "@/features/scope/data/sqlite-scope-repository";
+import { SqliteActorRepository } from "@/features/actors/data/sqlite-actor-repository";
 
 const shared = globalThis as typeof globalThis & {
   taskDatabase?: Database.Database;
   taskRepository?: SqliteTaskRepository;
   scopeRepository?: SqliteScopeRepository;
+  actorRepository?: SqliteActorRepository;
 };
 
 export function getDatabase() {
@@ -31,4 +33,9 @@ export function getTaskRepository() {
 export function getScopeRepository() {
   shared.scopeRepository ??= new SqliteScopeRepository(getDatabase());
   return shared.scopeRepository;
+}
+
+export function getActorRepository() {
+  shared.actorRepository ??= new SqliteActorRepository(getDatabase());
+  return shared.actorRepository;
 }
