@@ -1,7 +1,7 @@
 export type CommandErrorCode =
   | "VALIDATION_ERROR" | "NOT_FOUND" | "INVALID_TRANSITION"
   | "VERSION_CONFLICT" | "SCOPE_REQUIRED" | "PREREQUISITE_UNRESOLVED"
-  | "ACTOR_NOT_ALLOWED" | "STORAGE_ERROR";
+  | "ACTOR_NOT_ALLOWED" | "OWNERSHIP_REQUIRED" | "STORAGE_ERROR";
 
 export type CommandResult<T> =
   | { ok: true; data: T }

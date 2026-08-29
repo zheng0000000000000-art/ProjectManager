@@ -1,13 +1,17 @@
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSchema } from "@/db/schema";
 import { seedDefaultProject } from "@/db/seed";
-import { SqliteTaskRepository } from "../data/sqlite-task-repository";
-import { createTaskCommands } from "./task-commands";
+import { SqliteAuditRepository } from "@/features/audit/data/sqlite-audit-repository";
 import type { ActorContext } from "@/features/actors/domain/actor";
 import { DEFAULT_PROJECT_ID } from "@/features/scope/domain/scope";
+import { SqliteTaskRepository } from "../data/sqlite-task-repository";
+import type { TaskRecord } from "../domain/task";
+import type { CommandResult } from "./command-result";
+import { createTaskCommands } from "./task-commands";
 
 const databases: Database.Database[] = [];
+const commandTime = "2026-08-29T15:00:00.000Z";
 
 const humanActor: ActorContext = {
   userId: "user-fixed", projectId: DEFAULT_PROJECT_ID, actorType: "human",
@@ -17,158 +21,430 @@ const codexActor: ActorContext = {
   userId: "user-codex", projectId: DEFAULT_PROJECT_ID, actorType: "ai",
 };
 
-function setup(actor: ActorContext = humanActor, clock = () => "2026-08-29T12:00:00.000Z") {
+function setup() {
   const database = new Database(":memory:");
   databases.push(database);
   createSchema(database);
   seedDefaultProject(database);
   return {
     database,
-    repository: new SqliteTaskRepository(database),
-    commands: createTaskCommands(new SqliteTaskRepository(database), actor, clock),
+    tasks: new SqliteTaskRepository(database),
+    audits: new SqliteAuditRepository(database),
   };
 }
 
-afterEach(() => databases.splice(0).forEach((database) => database.close()));
+function commandsFor(
+  fixture: ReturnType<typeof setup>,
+  actor: ActorContext,
+  requestId: string,
+  clock = () => commandTime,
+) {
+  return createTaskCommands(fixture.tasks, fixture.audits, actor, { requestId, clock });
+}
+
+function taskIdFrom(result: CommandResult<{ taskId: string }>) {
+  if (!result.ok) throw new Error(`task setup failed: ${result.code}`);
+  return result.data.taskId;
+}
+
+async function prepareDraft(
+  fixture: ReturnType<typeof setup>,
+  actor: ActorContext,
+  prefix: string,
+) {
+  return taskIdFrom(await commandsFor(fixture, actor, `${prefix}-create`).createDraft());
+}
+
+async function preparePublished(
+  fixture: ReturnType<typeof setup>,
+  actor: ActorContext,
+  prefix: string,
+) {
+  const taskId = await prepareDraft(fixture, actor, prefix);
+  const result = await commandsFor(fixture, actor, `${prefix}-publish`).publishTask({
+    taskId,
+    expectedVersion: 1,
+    title: `${prefix} 작업`,
+    goal: `${prefix} 흐름을 검증한다`,
+    workTypeId: "work-development",
+    estimatedBlocks: 1,
+    deadline: null,
+  });
+  if (!result.ok) throw new Error(`publish setup failed: ${result.code}`);
+  return taskId;
+}
+
+async function prepareTaken(
+  fixture: ReturnType<typeof setup>,
+  actor: ActorContext,
+  prefix: string,
+) {
+  const taskId = await preparePublished(fixture, actor, prefix);
+  const result = await commandsFor(fixture, actor, `${prefix}-take`).takeTask({
+    taskId,
+    expectedVersion: 2,
+  });
+  if (!result.ok) throw new Error(`take setup failed: ${result.code}`);
+  return taskId;
+}
+
+async function prepareRunning(
+  fixture: ReturnType<typeof setup>,
+  actor: ActorContext,
+  prefix: string,
+) {
+  const taskId = await prepareTaken(fixture, actor, prefix);
+  const result = await commandsFor(fixture, actor, `${prefix}-start`).startTask({
+    taskId,
+    expectedVersion: 3,
+  });
+  if (!result.ok) throw new Error(`start setup failed: ${result.code}`);
+  return taskId;
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  databases.splice(0).forEach((database) => database.close());
+});
 
 describe("task commands", () => {
-  it("records the Codex actor and actual start time through the shared commands", async () => {
-    const { database, repository, commands } = setup(codexActor);
-    const created = await commands.createDraft();
-    if (!created.ok) throw new Error("draft failed");
+  it("records one atomic success audit for each shared Codex command", async () => {
+    const fixture = setup();
+    const commands = commandsFor(fixture, codexActor, "request-codex");
+    const taskId = taskIdFrom(await commands.createDraft());
     await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "AI 작업",
+      taskId, expectedVersion: 1, title: "AI 작업",
       goal: "동일한 명령 경계를 검증한다", workTypeId: "work-development",
       estimatedBlocks: 1, deadline: null,
     });
-    await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 2 });
-    await commands.startTask({ taskId: created.data.taskId, expectedVersion: 3 });
+    await commands.takeTask({ taskId, expectedVersion: 2 });
+    await commands.startTask({ taskId, expectedVersion: 3 });
 
-    expect(await repository.findById(created.data.taskId)).toMatchObject({
+    expect(await fixture.tasks.findById(taskId)).toMatchObject({
       assigneeId: "user-codex",
       workStatus: "in_progress",
-      startedAt: "2026-08-29T12:00:00.000Z",
+      startedAt: commandTime,
     });
-    expect(database.prepare(`SELECT creator_id FROM tasks WHERE id = ?`).get(created.data.taskId))
+    expect(fixture.database.prepare(`SELECT creator_id FROM tasks WHERE id = ?`).get(taskId))
       .toEqual({ creator_id: "user-codex" });
-    expect(database.prepare(`SELECT DISTINCT actor_id FROM task_events WHERE task_id = ?`).all(created.data.taskId))
+    expect(fixture.database.prepare(`SELECT DISTINCT actor_id FROM task_events WHERE task_id = ?`).all(taskId))
       .toEqual([{ actor_id: "user-codex" }]);
-    expect(database.prepare(`SELECT created_at FROM task_events
-      WHERE task_id = ? AND event_type = 'started'`).get(created.data.taskId))
-      .toEqual({ created_at: "2026-08-29T12:00:00.000Z" });
+    expect(fixture.database.prepare(`SELECT created_at FROM task_events
+      WHERE task_id = ? AND event_type = 'started'`).get(taskId))
+      .toEqual({ created_at: commandTime });
+    const audits = fixture.audits.listByRequestIdForTest("request-codex");
+    expect(audits).toHaveLength(4);
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "task.create", outcome: "success", actorId: "user-codex" }),
+      expect.objectContaining({ action: "task.publish", outcome: "success", actorId: "user-codex" }),
+      expect.objectContaining({ action: "task.take", outcome: "success", actorId: "user-codex" }),
+      expect.objectContaining({ action: "task.start", outcome: "success", actorId: "user-codex" }),
+    ]));
   });
 
-  it("does not let a human start the Codex worker's task", async () => {
-    const { database, commands } = setup(codexActor);
-    const created = await commands.createDraft();
-    if (!created.ok) throw new Error("draft failed");
-    await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "AI 소유 작업",
-      goal: "소유권을 검증한다", workTypeId: "work-development",
-      estimatedBlocks: 1, deadline: null,
-    });
-    await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 2 });
-    const humanCommands = createTaskCommands(new SqliteTaskRepository(database), humanActor);
+  it("completes a human task with the same event and audit time", async () => {
+    const fixture = setup();
+    const taskId = await prepareRunning(fixture, humanActor, "completion");
+    const context = { requestId: "request-complete", clock: () => commandTime };
+    const commands = createTaskCommands(fixture.tasks, fixture.audits, humanActor, context);
 
-    await expect(humanCommands.startTask({ taskId: created.data.taskId, expectedVersion: 3 }))
-      .resolves.toMatchObject({ ok: false, code: "INVALID_TRANSITION" });
+    const result = await commands.completeTask({
+      taskId,
+      expectedVersion: 4,
+      completionSummary: "  완료했다  ",
+    });
+
+    expect(result).toEqual({ ok: true, data: { taskId } });
+    expect(await fixture.tasks.findById(taskId)).toMatchObject({
+      workStatus: "completed",
+      completedAt: commandTime,
+      completionSummary: "완료했다",
+      version: 5,
+    });
+    expect(fixture.database.prepare(`SELECT event_type, created_at FROM task_events
+      WHERE task_id = ? AND event_type = 'completed'`).get(taskId)).toEqual({
+      event_type: "completed",
+      created_at: commandTime,
+    });
+    expect(fixture.audits.listByRequestIdForTest("request-complete")).toEqual([
+      expect.objectContaining({
+        action: "task.complete",
+        outcome: "success",
+        fromState: "in_progress",
+        toState: "completed",
+        createdAt: commandTime,
+      }),
+    ]);
   });
 
-  it("runs the complete workflow through version four", async () => {
-    const { repository, commands } = setup();
-    const created = await commands.createDraft();
-    expect(created).toMatchObject({ ok: true });
-    if (!created.ok) return;
+  it("returns a taken task to the pool with one event and one success audit", async () => {
+    const fixture = setup();
+    const taskId = await prepareTaken(fixture, humanActor, "return");
 
-    const published = await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "흐름 검증",
-      goal: "전체 명령을 검증한다", workTypeId: "work-development",
-      estimatedBlocks: 3, deadline: null,
-    });
-    expect(published).toMatchObject({ ok: true });
-    const taken = await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 2 });
-    expect(taken).toMatchObject({ ok: true });
-    const started = await commands.startTask({ taskId: created.data.taskId, expectedVersion: 3 });
-    expect(started).toMatchObject({ ok: true });
-    expect(await repository.findById(created.data.taskId)).toMatchObject({ version: 4, workStatus: "in_progress" });
-  });
-
-  it("maps field validation and stale versions to safe Korean errors", async () => {
-    const { commands } = setup();
-    const created = await commands.createDraft();
-    if (!created.ok) throw new Error("draft failed");
-    expect(await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "", goal: "",
-      workTypeId: "", estimatedBlocks: 0, deadline: null,
-    })).toEqual({
-      ok: false, code: "VALIDATION_ERROR", message: "입력 내용을 확인해 주세요.",
-      fieldErrors: { title: ["제목을 입력해 주세요."] },
-    });
-    expect(await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 0 })).toMatchObject({
-      ok: false, code: "VERSION_CONFLICT",
-      message: "다른 변경 사항이 반영되었습니다. 최신 내용을 불러와 다시 시도해 주세요.",
-    });
-  });
-
-  it("returns a taken task to the pool and records one event", async () => {
-    const { repository, commands } = setup();
-    const created = await commands.createDraft();
-    if (!created.ok) throw new Error("draft failed");
-    await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "반환할 작업",
-      goal: "작업 풀로 돌려보낸다", workTypeId: "work-development",
-      estimatedBlocks: 2, deadline: null,
-    });
-    await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 2 });
-
-    expect(await commands.returnTask({
-      taskId: created.data.taskId,
+    expect(await commandsFor(fixture, humanActor, "request-return").returnTask({
+      taskId,
       expectedVersion: 3,
-    })).toMatchObject({ ok: true });
-    expect(await repository.findById(created.data.taskId)).toMatchObject({
+    })).toEqual({ ok: true, data: { taskId } });
+    expect(await fixture.tasks.findById(taskId)).toMatchObject({
       assigneeId: null,
       workStatus: "open",
       version: 4,
     });
-    expect(await repository.countEvents(created.data.taskId)).toBe(4);
+    expect(await fixture.tasks.countEvents(taskId)).toBe(4);
+    expect(fixture.audits.listByRequestIdForTest("request-return")).toEqual([
+      expect.objectContaining({ action: "task.return", outcome: "success", toState: "open" }),
+    ]);
   });
 
-  it("rejects take when the admin member's work scope was revoked", async () => {
-    const { database, commands } = setup();
-    const created = await commands.createDraft();
-    if (!created.ok) throw new Error("draft failed");
-    await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "권한 검증",
-      goal: "관리자도 범위가 필요하다", workTypeId: "work-development",
-      estimatedBlocks: 1, deadline: null,
-    });
-    database.prepare("UPDATE member_work_scopes SET active = 0 WHERE work_type_id = 'work-development'").run();
+  type FailureAttempt = {
+    taskId: string;
+    beforeTask: TaskRecord | null;
+    beforeEventCount: number;
+    result: CommandResult<{ taskId: string }>;
+  };
 
-    expect(await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 2 })).toEqual({
-      ok: false,
-      code: "SCOPE_REQUIRED",
-      message: "이 작업 종류를 가져갈 수 있는 활성 작업 범위가 없습니다.",
-    });
+  type FailureCase = {
+    name: string;
+    requestId: string;
+    action: "task.publish" | "task.take" | "task.complete";
+    resultCode: "VALIDATION_ERROR" | "ACTOR_NOT_ALLOWED" | "SCOPE_REQUIRED" |
+      "PREREQUISITE_UNRESOLVED" | "OWNERSHIP_REQUIRED" | "INVALID_TRANSITION" |
+      "NOT_FOUND" | "VERSION_CONFLICT";
+    auditCode: string;
+    fieldNames: string[];
+    actorType?: "human" | "ai";
+    expectedVersion: number;
+    attempt(fixture: ReturnType<typeof setup>): Promise<FailureAttempt>;
+  };
+
+  async function captureFailure(
+    fixture: ReturnType<typeof setup>,
+    taskId: string,
+    run: () => Promise<CommandResult<{ taskId: string }>>,
+  ): Promise<FailureAttempt> {
+    const beforeTask = await fixture.tasks.findById(taskId);
+    const beforeEventCount = await fixture.tasks.countEvents(taskId);
+    const result = await run();
+    return { taskId, beforeTask, beforeEventCount, result };
+  }
+
+  const failureCases: FailureCase[] = [
+    {
+      name: "validation failure",
+      requestId: "request-validation",
+      action: "task.complete",
+      resultCode: "VALIDATION_ERROR",
+      auditCode: "VALIDATION_ERROR",
+      fieldNames: ["completionSummary"],
+      expectedVersion: 4,
+      async attempt(fixture) {
+        const taskId = await prepareRunning(fixture, humanActor, "validation");
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).completeTask({
+          taskId, expectedVersion: this.expectedVersion, completionSummary: "   ",
+        }));
+      },
+    },
+    {
+      name: "scope failure",
+      requestId: "request-scope",
+      action: "task.take",
+      resultCode: "SCOPE_REQUIRED",
+      auditCode: "SCOPE_REQUIRED",
+      fieldNames: [],
+      expectedVersion: 2,
+      async attempt(fixture) {
+        const taskId = await preparePublished(fixture, humanActor, "scope");
+        fixture.database.prepare("UPDATE member_work_scopes SET active = 0 WHERE work_type_id = 'work-development'").run();
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).takeTask({
+          taskId, expectedVersion: this.expectedVersion,
+        }));
+      },
+    },
+    {
+      name: "prerequisite failure",
+      requestId: "request-prerequisite",
+      action: "task.take",
+      resultCode: "PREREQUISITE_UNRESOLVED",
+      auditCode: "PREREQUISITE_UNRESOLVED",
+      fieldNames: [],
+      expectedVersion: 2,
+      async attempt(fixture) {
+        const prerequisiteId = await prepareDraft(fixture, humanActor, "prerequisite-blocker");
+        const taskId = await preparePublished(fixture, humanActor, "prerequisite-target");
+        fixture.database.prepare(`INSERT INTO task_prerequisites
+          (task_id, prerequisite_task_id, resolved_at) VALUES (?, ?, NULL)`)
+          .run(taskId, prerequisiteId);
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).takeTask({
+          taskId, expectedVersion: this.expectedVersion,
+        }));
+      },
+    },
+    {
+      name: "actor-type failure",
+      requestId: "request-actor-type",
+      action: "task.complete",
+      resultCode: "ACTOR_NOT_ALLOWED",
+      auditCode: "ACTOR_REJECTED",
+      fieldNames: [],
+      actorType: "ai",
+      expectedVersion: 4,
+      async attempt(fixture) {
+        const taskId = await prepareRunning(fixture, codexActor, "actor-type");
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, codexActor, this.requestId).completeTask({
+          taskId, expectedVersion: this.expectedVersion, completionSummary: "완료 시도",
+        }));
+      },
+    },
+    {
+      name: "ownership failure",
+      requestId: "request-ownership",
+      action: "task.complete",
+      resultCode: "OWNERSHIP_REQUIRED",
+      auditCode: "OWNERSHIP_REQUIRED",
+      fieldNames: [],
+      expectedVersion: 4,
+      async attempt(fixture) {
+        const taskId = await prepareRunning(fixture, codexActor, "ownership");
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).completeTask({
+          taskId, expectedVersion: this.expectedVersion, completionSummary: "완료 시도",
+        }));
+      },
+    },
+    {
+      name: "state failure",
+      requestId: "request-state",
+      action: "task.complete",
+      resultCode: "INVALID_TRANSITION",
+      auditCode: "INVALID_TRANSITION",
+      fieldNames: [],
+      expectedVersion: 3,
+      async attempt(fixture) {
+        const taskId = await prepareTaken(fixture, humanActor, "state");
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).completeTask({
+          taskId, expectedVersion: this.expectedVersion, completionSummary: "완료 시도",
+        }));
+      },
+    },
+    {
+      name: "not-found failure",
+      requestId: "request-not-found",
+      action: "task.take",
+      resultCode: "NOT_FOUND",
+      auditCode: "NOT_FOUND",
+      fieldNames: [],
+      expectedVersion: 1,
+      async attempt(fixture) {
+        const taskId = "missing-task";
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).takeTask({
+          taskId, expectedVersion: this.expectedVersion,
+        }));
+      },
+    },
+    {
+      name: "stale-version failure",
+      requestId: "request-version",
+      action: "task.publish",
+      resultCode: "VERSION_CONFLICT",
+      auditCode: "VERSION_CONFLICT",
+      fieldNames: [],
+      expectedVersion: 0,
+      async attempt(fixture) {
+        const taskId = await prepareDraft(fixture, humanActor, "version");
+        return captureFailure(fixture, taskId, () => commandsFor(fixture, humanActor, this.requestId).publishTask({
+          taskId,
+          expectedVersion: this.expectedVersion,
+          title: "오래된 변경",
+          goal: "버전 충돌을 검증한다",
+          workTypeId: "work-development",
+          estimatedBlocks: 1,
+          deadline: null,
+        }));
+      },
+    },
+  ];
+
+  it.each(failureCases)("audits exactly one $name without task or event changes", async (testCase) => {
+    const fixture = setup();
+    const attempt = await testCase.attempt(fixture);
+    const failureAudit = fixture.audits.listByRequestIdForTest(testCase.requestId);
+
+    expect(attempt.result).toMatchObject({ ok: false, code: testCase.resultCode });
+    expect(failureAudit).toEqual([
+      expect.objectContaining({
+        action: testCase.action,
+        outcome: "failure",
+        errorCode: testCase.auditCode,
+        toState: null,
+        metadata: {
+          expectedVersion: testCase.expectedVersion,
+          fieldNames: testCase.fieldNames,
+          actorType: testCase.actorType ?? "human",
+        },
+      }),
+    ]);
+    expect(failureAudit.filter((entry) => entry.outcome === "success")).toHaveLength(0);
+    expect(await fixture.tasks.findById(attempt.taskId)).toEqual(attempt.beforeTask);
+    expect(await fixture.tasks.countEvents(attempt.taskId)).toBe(attempt.beforeEventCount);
   });
 
-  it("returns a classified error when a prerequisite is unresolved", async () => {
-    const { database, commands } = setup();
-    const prerequisite = await commands.createDraft();
-    const created = await commands.createDraft();
-    if (!prerequisite.ok || !created.ok) throw new Error("draft failed");
-    await commands.publishTask({
-      taskId: created.data.taskId, expectedVersion: 1, title: "차단된 작업",
-      goal: "선행 작업 뒤에 가져간다", workTypeId: "work-development",
-      estimatedBlocks: 1, deadline: null,
+  it("classifies a structurally equivalent domain error from another bundle", async () => {
+    const fixture = setup();
+    const taskId = await prepareRunning(fixture, humanActor, "structural-domain");
+    vi.spyOn(fixture.tasks, "runCommand").mockRejectedValue({
+      name: "TaskDomainError",
+      code: "VALIDATION_ERROR",
+      message: "완료 결과를 입력해 주세요.",
+      field: "completionSummary",
     });
-    database.prepare(`INSERT INTO task_prerequisites
-      (task_id, prerequisite_task_id, resolved_at) VALUES (?, ?, NULL)`)
-      .run(created.data.taskId, prerequisite.data.taskId);
 
-    expect(await commands.takeTask({ taskId: created.data.taskId, expectedVersion: 2 })).toEqual({
-      ok: false,
-      code: "PREREQUISITE_UNRESOLVED",
-      message: "완료되지 않은 선행 작업이 있어 가져갈 수 없습니다.",
+    const result = await commandsFor(fixture, humanActor, "request-structural-domain").completeTask({
+      taskId,
+      expectedVersion: 4,
+      completionSummary: "완료",
     });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "VALIDATION_ERROR",
+      message: "입력 내용을 확인해 주세요.",
+      fieldErrors: { completionSummary: ["완료 결과를 입력해 주세요."] },
+    });
+    expect(fixture.audits.listByRequestIdForTest("request-structural-domain")).toEqual([
+      expect.objectContaining({
+        errorCode: "VALIDATION_ERROR",
+        metadata: {
+          expectedVersion: 4,
+          fieldNames: ["completionSummary"],
+          actorType: "human",
+        },
+      }),
+    ]);
+  });
+
+  it("preserves the classified command result when failure-audit persistence fails", async () => {
+    const fixture = setup();
+    const taskId = await prepareRunning(fixture, humanActor, "audit-storage");
+    const before = await fixture.tasks.findById(taskId);
+    const eventCount = await fixture.tasks.countEvents(taskId);
+    fixture.database.exec(`CREATE TRIGGER reject_failure_audit BEFORE INSERT ON audit_logs
+      WHEN NEW.outcome = 'failure' BEGIN SELECT RAISE(ABORT, 'forced audit failure'); END`);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const result = await commandsFor(fixture, humanActor, "request-audit-storage").completeTask({
+      taskId,
+      expectedVersion: 4,
+      completionSummary: "   ",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "VALIDATION_ERROR",
+      message: "입력 내용을 확인해 주세요.",
+      fieldErrors: { completionSummary: ["완료 결과를 입력해 주세요."] },
+    });
+    expect(consoleError).toHaveBeenCalledWith("Audit persistence failed", expect.any(Error));
+    expect(fixture.audits.listByRequestIdForTest("request-audit-storage")).toEqual([]);
+    expect(await fixture.tasks.findById(taskId)).toEqual(before);
+    expect(await fixture.tasks.countEvents(taskId)).toBe(eventCount);
   });
 });
