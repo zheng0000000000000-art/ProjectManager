@@ -6,25 +6,26 @@ import { seedDefaultProject } from "../../src/db/seed";
 
 const filename = path.join(process.cwd(), "data", "browser-test.db");
 
-export default function globalSetup() {
-  fs.mkdirSync(path.dirname(filename), { recursive: true });
-  const database = new Database(filename);
+function initializeDatabase(databaseFilename: string, recreate: boolean) {
+  fs.mkdirSync(path.dirname(databaseFilename), { recursive: true });
+  if (recreate) fs.rmSync(databaseFilename, { force: true });
+  const database = new Database(databaseFilename);
   try {
     createSchema(database);
-    database.exec(`
-      PRAGMA foreign_keys = OFF;
-      DELETE FROM task_prerequisites;
-      DELETE FROM task_events;
-      DELETE FROM tasks;
-      DELETE FROM member_work_scopes;
-      DELETE FROM work_types;
-      DELETE FROM project_members;
-      DELETE FROM projects;
-      DELETE FROM users;
-      PRAGMA foreign_keys = ON;
-    `);
     seedDefaultProject(database);
   } finally {
     database.close();
   }
+}
+
+export function recreateBrowserTestDatabase(databaseFilename = filename) {
+  initializeDatabase(databaseFilename, true);
+}
+
+export default function globalSetup() {
+  initializeDatabase(filename, false);
+}
+
+if (path.basename(process.argv[1] ?? "") === "global-setup.ts") {
+  recreateBrowserTestDatabase();
 }
