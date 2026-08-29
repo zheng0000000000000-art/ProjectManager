@@ -13,6 +13,7 @@ export interface TaskRecord {
   publicationState: PublicationState;
   workStatus: WorkStatus;
   assigneeId: string | null;
+  startedAt: string | null;
   version: number;
 }
 

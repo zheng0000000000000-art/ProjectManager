@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { ActorContext } from "@/features/actors/domain/actor";
 import type { TaskRecord } from "../domain/task";
 import {
   TaskRepositoryError,
@@ -13,6 +14,7 @@ type TaskRow = {
   estimated_blocks: number | null; deadline: string | null;
   publication_state: TaskRecord["publicationState"];
   work_status: TaskRecord["workStatus"]; assignee_id: string | null; version: number;
+  started_at: string | null;
   work_type_name?: string | null;
 };
 
@@ -21,7 +23,7 @@ function toTask(row: TaskRow): TaskRecord {
     id: row.id, projectId: row.project_id, title: row.title, goal: row.goal, workTypeId: row.work_type_id,
     estimatedBlocks: row.estimated_blocks, deadline: row.deadline,
     publicationState: row.publication_state, workStatus: row.work_status,
-    assigneeId: row.assignee_id, version: row.version,
+    assigneeId: row.assignee_id, startedAt: row.started_at, version: row.version,
   };
 }
 
@@ -40,7 +42,7 @@ export class SqliteTaskRepository implements TaskRepository {
         VALUES (?, ?, 'created', ?, NULL, 'draft', ?)`)
         .run(crypto.randomUUID(), id, actorId, now);
       return toTask(this.getRow(id)!);
-    })();
+    }).immediate();
   }
 
   async findById(id: string) {
@@ -48,18 +50,23 @@ export class SqliteTaskRepository implements TaskRepository {
     return row ? toTask(row) : null;
   }
 
-  async listPool(actorId: string) {
+  async listPool(actor: ActorContext) {
     return this.listWhere(`t.publication_state = 'published' AND t.work_status = 'open'
-      AND t.assignee_id IS NULL AND EXISTS (
+      AND t.assignee_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM task_prerequisites p
+        WHERE p.task_id = t.id AND p.resolved_at IS NULL
+      )
+      AND EXISTS (
         SELECT 1 FROM project_members m
         JOIN member_work_scopes s ON s.project_id = m.project_id AND s.member_id = m.id
           AND s.work_type_id = t.work_type_id AND s.active = 1
         WHERE m.project_id = t.project_id AND m.user_id = ? AND m.active = 1
-      )`, [actorId]);
+      ) AND t.project_id = ?`, [actor.userId, actor.projectId]);
   }
 
-  async listForAssignee(assigneeId: string) {
-    return this.listWhere("t.assignee_id = ?", [assigneeId]);
+  async listForAssignee(actor: ActorContext) {
+    return this.listWhere("t.assignee_id = ? AND t.project_id = ?", [actor.userId, actor.projectId]);
   }
 
   async countEvents(taskId: string) {
@@ -79,15 +86,24 @@ export class SqliteTaskRepository implements TaskRepository {
       const next = command({
         task,
         appendEvent: (event) => events.push(event),
-        requireTakeScope: (actorId) => {
+        requireTakeEligibility: (actor: ActorContext) => {
+          const unresolved = this.database.prepare(`SELECT 1 blocked
+            FROM task_prerequisites
+            WHERE task_id = ? AND resolved_at IS NULL LIMIT 1`).get(task.id);
+          if (unresolved) {
+            throw new TaskRepositoryError(
+              "PREREQUISITE_UNRESOLVED",
+              "완료되지 않은 선행 작업이 있어 가져갈 수 없습니다.",
+            );
+          }
           const allowed = this.database.prepare(`SELECT 1 allowed
             FROM project_members m
             JOIN member_work_scopes s ON s.project_id = m.project_id AND s.member_id = m.id
               AND s.work_type_id = ? AND s.active = 1
             WHERE m.project_id = ? AND m.user_id = ? AND m.active = 1`).get(
-            task.workTypeId, task.projectId, actorId,
+            task.workTypeId, task.projectId, actor.userId,
           );
-          if (!allowed) {
+          if (!allowed || actor.projectId !== task.projectId) {
             throw new TaskRepositoryError(
               "SCOPE_REQUIRED",
               "이 작업 종류를 가져갈 수 있는 활성 작업 범위가 없습니다.",
@@ -97,10 +113,10 @@ export class SqliteTaskRepository implements TaskRepository {
       });
       if (events.length !== 1) throw new TaskRepositoryError("INVALID_EVENT_COUNT", "명령은 이력 하나를 기록해야 합니다.");
       const result = this.database.prepare(`UPDATE tasks SET title=?, goal=?, work_type_id=?, estimated_blocks=?,
-        deadline=?, publication_state=?, work_status=?, assignee_id=?, version=?, updated_at=?
+        deadline=?, publication_state=?, work_status=?, assignee_id=?, started_at=?, version=?, updated_at=?
         WHERE id=? AND version=?`).run(
         next.title, next.goal, next.workTypeId, next.estimatedBlocks, next.deadline,
-        next.publicationState, next.workStatus, next.assigneeId, next.version,
+        next.publicationState, next.workStatus, next.assigneeId, next.startedAt, next.version,
         new Date().toISOString(), taskId, expectedVersion,
       );
       if (result.changes !== 1) throw new TaskRepositoryError("VERSION_CONFLICT", "다른 변경 사항이 반영되었습니다. 최신 내용을 불러와 다시 시도해 주세요.");
@@ -109,10 +125,10 @@ export class SqliteTaskRepository implements TaskRepository {
         (id, task_id, event_type, actor_id, from_state, to_state, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
         crypto.randomUUID(), taskId, event.eventType, event.actorId,
-        event.fromState, event.toState, new Date().toISOString(),
+        event.fromState, event.toState, event.createdAt,
       );
       return next;
-    })();
+    }).immediate();
   }
 
   private getRow(id: string) {

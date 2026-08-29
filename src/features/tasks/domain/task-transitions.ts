@@ -78,7 +78,7 @@ export function take(task: TaskRecord, actorId: string): TaskRecord {
   };
 }
 
-export function start(task: TaskRecord, actorId: string): TaskRecord {
+export function start(task: TaskRecord, actorId: string, startedAt: string): TaskRecord {
   if (task.assigneeId !== actorId) {
     throw new TaskDomainError(
       "INVALID_TRANSITION",
@@ -96,6 +96,7 @@ export function start(task: TaskRecord, actorId: string): TaskRecord {
   return {
     ...task,
     workStatus: "in_progress",
+    startedAt,
     version: task.version + 1,
   };
 }

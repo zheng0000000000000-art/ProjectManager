@@ -16,7 +16,7 @@ async function seed() {
       const draft = await repository.createDraft("user-fixed", DEFAULT_PROJECT_ID);
       await repository.runCommand(draft.id, draft.version, ({ task, appendEvent }) => {
         const next = publish(task, { title, goal, workTypeId, estimatedBlocks: blocks, deadline: null });
-        appendEvent({ eventType: "published", actorId: "user-fixed", fromState: "draft", toState: "published" });
+        appendEvent({ eventType: "published", actorId: "user-fixed", fromState: "draft", toState: "published", createdAt: new Date().toISOString() });
         return next;
       });
     }

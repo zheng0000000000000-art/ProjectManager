@@ -3,7 +3,7 @@ import { TaskRepositoryError } from "../data/task-repository";
 import { TaskDomainError } from "../domain/task-errors";
 import { publish, returnToPool, start, take } from "../domain/task-transitions";
 import type { CommandResult } from "./command-result";
-import { DEFAULT_PROJECT_ID, FIXED_USER_ID } from "@/features/scope/domain/scope";
+import type { ActorContext } from "@/features/actors/domain/actor";
 
 type VersionedTaskInput = { taskId: string; expectedVersion: number };
 export type PublishTaskInput = VersionedTaskInput & {
@@ -22,7 +22,7 @@ function failure(error: unknown): CommandResult<{ taskId: string }> {
     return { ok: false, code: "INVALID_TRANSITION", message: error.message };
   }
   if (error instanceof TaskRepositoryError) {
-    if (error.code === "VERSION_CONFLICT" || error.code === "NOT_FOUND" || error.code === "SCOPE_REQUIRED") {
+    if (error.code === "VERSION_CONFLICT" || error.code === "NOT_FOUND" || error.code === "SCOPE_REQUIRED" || error.code === "PREREQUISITE_UNRESOLVED") {
       return { ok: false, code: error.code, message: error.message };
     }
   }
@@ -30,11 +30,15 @@ function failure(error: unknown): CommandResult<{ taskId: string }> {
   return { ok: false, code: "STORAGE_ERROR", message: "작업을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요." };
 }
 
-export function createTaskCommands(repository: TaskRepository) {
+export function createTaskCommands(
+  repository: TaskRepository,
+  actor: ActorContext,
+  clock: () => string = () => new Date().toISOString(),
+) {
   return {
     async createDraft(): Promise<CommandResult<{ taskId: string }>> {
       try {
-        const task = await repository.createDraft(FIXED_USER_ID, DEFAULT_PROJECT_ID);
+        const task = await repository.createDraft(actor.userId, actor.projectId);
         return { ok: true, data: { taskId: task.id } };
       } catch (error) { return failure(error); }
     },
@@ -42,7 +46,7 @@ export function createTaskCommands(repository: TaskRepository) {
       try {
         const task = await repository.runCommand(input.taskId, input.expectedVersion, ({ task, appendEvent }) => {
           const next = publish(task, input);
-          appendEvent({ eventType: "published", actorId: FIXED_USER_ID, fromState: "draft", toState: "published" });
+          appendEvent({ eventType: "published", actorId: actor.userId, fromState: "draft", toState: "published", createdAt: clock() });
           return next;
         });
         return { ok: true, data: { taskId: task.id } };
@@ -50,10 +54,10 @@ export function createTaskCommands(repository: TaskRepository) {
     },
     async takeTask(input: VersionedTaskInput): Promise<CommandResult<{ taskId: string }>> {
       try {
-        const task = await repository.runCommand(input.taskId, input.expectedVersion, ({ task, appendEvent, requireTakeScope }) => {
-          requireTakeScope(FIXED_USER_ID);
-          const next = take(task, FIXED_USER_ID);
-          appendEvent({ eventType: "taken", actorId: FIXED_USER_ID, fromState: task.workStatus, toState: next.workStatus });
+        const task = await repository.runCommand(input.taskId, input.expectedVersion, ({ task, appendEvent, requireTakeEligibility }) => {
+          requireTakeEligibility(actor);
+          const next = take(task, actor.userId);
+          appendEvent({ eventType: "taken", actorId: actor.userId, fromState: task.workStatus, toState: next.workStatus, createdAt: clock() });
           return next;
         });
         return { ok: true, data: { taskId: task.id } };
@@ -62,8 +66,9 @@ export function createTaskCommands(repository: TaskRepository) {
     async startTask(input: VersionedTaskInput): Promise<CommandResult<{ taskId: string }>> {
       try {
         const task = await repository.runCommand(input.taskId, input.expectedVersion, ({ task, appendEvent }) => {
-          const next = start(task, FIXED_USER_ID);
-          appendEvent({ eventType: "started", actorId: FIXED_USER_ID, fromState: task.workStatus, toState: next.workStatus });
+          const startedAt = clock();
+          const next = start(task, actor.userId, startedAt);
+          appendEvent({ eventType: "started", actorId: actor.userId, fromState: task.workStatus, toState: next.workStatus, createdAt: startedAt });
           return next;
         });
         return { ok: true, data: { taskId: task.id } };
@@ -72,8 +77,8 @@ export function createTaskCommands(repository: TaskRepository) {
     async returnTask(input: VersionedTaskInput): Promise<CommandResult<{ taskId: string }>> {
       try {
         const task = await repository.runCommand(input.taskId, input.expectedVersion, ({ task, appendEvent }) => {
-          const next = returnToPool(task, FIXED_USER_ID);
-          appendEvent({ eventType: "returned", actorId: FIXED_USER_ID, fromState: task.workStatus, toState: next.workStatus });
+          const next = returnToPool(task, actor.userId);
+          appendEvent({ eventType: "returned", actorId: actor.userId, fromState: task.workStatus, toState: next.workStatus, createdAt: clock() });
           return next;
         });
         return { ok: true, data: { taskId: task.id } };

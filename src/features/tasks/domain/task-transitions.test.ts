@@ -14,6 +14,7 @@ const draft: TaskRecord = {
   publicationState: "draft",
   workStatus: "open",
   assigneeId: null,
+  startedAt: null,
   version: 1,
 };
 
@@ -63,8 +64,9 @@ describe("task transitions", () => {
   it("lets the assignee start a taken task", () => {
     const taken = take(publish(draft, validInput), "user-fixed");
 
-    expect(start(taken, "user-fixed")).toMatchObject({
+    expect(start(taken, "user-fixed", "2026-08-29T12:00:00.000Z")).toMatchObject({
       workStatus: "in_progress",
+      startedAt: "2026-08-29T12:00:00.000Z",
       version: 4,
     });
   });
@@ -81,7 +83,7 @@ describe("task transitions", () => {
 
   it("does not return an in-progress task", () => {
     const taken = take(publish(draft, validInput), "user-fixed");
-    const inProgress = start(taken, "user-fixed");
+    const inProgress = start(taken, "user-fixed", "2026-08-29T12:00:00.000Z");
 
     expect(() => returnToPool(inProgress, "user-fixed")).toThrowError(
       "시작 전인 작업만 돌려놓을 수 있습니다.",
@@ -91,8 +93,18 @@ describe("task transitions", () => {
   it("rejects starting a task by a non-assignee", () => {
     const taken = take(publish(draft, validInput), "user-fixed");
 
-    expect(() => start(taken, "another-user")).toThrowError(
+    expect(() => start(taken, "another-user", "2026-08-29T12:00:00.000Z")).toThrowError(
       "담당자만 작업을 시작할 수 있습니다.",
     );
+  });
+
+  it("does not replace the first actual start time", () => {
+    const taken = take(publish(draft, validInput), "user-fixed");
+    const started = start(taken, "user-fixed", "2026-08-29T12:00:00.000Z");
+
+    expect(() => start(started, "user-fixed", "2026-08-29T13:00:00.000Z")).toThrowError(
+      "가져간 작업만 시작할 수 있습니다.",
+    );
+    expect(started.startedAt).toBe("2026-08-29T12:00:00.000Z");
   });
 });
