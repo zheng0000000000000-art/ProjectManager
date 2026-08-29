@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { ActorContext } from "@/features/actors/domain/actor";
+import { serializeSafeAuditMetadata } from "@/features/audit/domain/audit-entry";
 import type { TaskRecord } from "../domain/task";
 import {
   TaskRepositoryError,
@@ -7,6 +8,7 @@ import {
   type TaskEventInput,
   type TaskListItem,
   type TaskRepository,
+  type SuccessAuditInput,
 } from "./task-repository";
 
 type TaskRow = {
@@ -14,7 +16,7 @@ type TaskRow = {
   estimated_blocks: number | null; deadline: string | null;
   publication_state: TaskRecord["publicationState"];
   work_status: TaskRecord["workStatus"]; assignee_id: string | null; version: number;
-  started_at: string | null;
+  started_at: string | null; completed_at: string | null; completion_summary: string | null;
   work_type_name?: string | null;
 };
 
@@ -23,14 +25,16 @@ function toTask(row: TaskRow): TaskRecord {
     id: row.id, projectId: row.project_id, title: row.title, goal: row.goal, workTypeId: row.work_type_id,
     estimatedBlocks: row.estimated_blocks, deadline: row.deadline,
     publicationState: row.publication_state, workStatus: row.work_status,
-    assigneeId: row.assignee_id, startedAt: row.started_at, version: row.version,
+    assigneeId: row.assignee_id, startedAt: row.started_at,
+    completedAt: row.completed_at, completionSummary: row.completion_summary,
+    version: row.version,
   };
 }
 
 export class SqliteTaskRepository implements TaskRepository {
   constructor(private readonly database: Database.Database) {}
 
-  async createDraft(actorId: string, projectId: string) {
+  async createDraft(actorId: string, projectId: string, audit: SuccessAuditInput) {
     return this.database.transaction(() => {
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
@@ -41,6 +45,7 @@ export class SqliteTaskRepository implements TaskRepository {
         (id, task_id, event_type, actor_id, from_state, to_state, created_at)
         VALUES (?, ?, 'created', ?, NULL, 'draft', ?)`)
         .run(crypto.randomUUID(), id, actorId, now);
+      this.insertSuccessAudit(audit, id, null, "draft");
       return toTask(this.getRow(id)!);
     }).immediate();
   }
@@ -74,7 +79,12 @@ export class SqliteTaskRepository implements TaskRepository {
     return row.count;
   }
 
-  async runCommand(taskId: string, expectedVersion: number, command: (context: CommandContext) => TaskRecord) {
+  async runCommand(
+    taskId: string,
+    expectedVersion: number,
+    audit: SuccessAuditInput,
+    command: (context: CommandContext) => TaskRecord,
+  ) {
     return this.database.transaction(() => {
       const row = this.getRow(taskId);
       if (!row) throw new TaskRepositoryError("NOT_FOUND", "작업을 찾을 수 없습니다.");
@@ -113,10 +123,12 @@ export class SqliteTaskRepository implements TaskRepository {
       });
       if (events.length !== 1) throw new TaskRepositoryError("INVALID_EVENT_COUNT", "명령은 이력 하나를 기록해야 합니다.");
       const result = this.database.prepare(`UPDATE tasks SET title=?, goal=?, work_type_id=?, estimated_blocks=?,
-        deadline=?, publication_state=?, work_status=?, assignee_id=?, started_at=?, version=?, updated_at=?
+        deadline=?, publication_state=?, work_status=?, assignee_id=?, started_at=?, completed_at=?,
+        completion_summary=?, version=?, updated_at=?
         WHERE id=? AND version=?`).run(
         next.title, next.goal, next.workTypeId, next.estimatedBlocks, next.deadline,
-        next.publicationState, next.workStatus, next.assigneeId, next.startedAt, next.version,
+        next.publicationState, next.workStatus, next.assigneeId, next.startedAt,
+        next.completedAt, next.completionSummary, next.version,
         new Date().toISOString(), taskId, expectedVersion,
       );
       if (result.changes !== 1) throw new TaskRepositoryError("VERSION_CONFLICT", "다른 변경 사항이 반영되었습니다. 최신 내용을 불러와 다시 시도해 주세요.");
@@ -127,12 +139,28 @@ export class SqliteTaskRepository implements TaskRepository {
         crypto.randomUUID(), taskId, event.eventType, event.actorId,
         event.fromState, event.toState, event.createdAt,
       );
+      this.insertSuccessAudit(audit, taskId, task.workStatus, next.workStatus);
       return next;
     }).immediate();
   }
 
   private getRow(id: string) {
     return this.database.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
+  }
+
+  private insertSuccessAudit(
+    audit: SuccessAuditInput,
+    taskId: string,
+    fromState: string | null,
+    toState: string,
+  ) {
+    this.database.prepare(`INSERT INTO audit_logs
+      (id, project_id, task_id, actor_id, action, outcome, error_code, from_state, to_state, request_id, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, ?, ?)`).run(
+      crypto.randomUUID(), audit.projectId, taskId, audit.actorId, audit.action,
+      audit.errorCode, fromState, toState, audit.requestId,
+      serializeSafeAuditMetadata(audit.metadata), audit.createdAt,
+    );
   }
 
   private listWhere(where: string, params: unknown[]): TaskListItem[] {

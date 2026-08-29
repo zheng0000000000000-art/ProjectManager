@@ -1,5 +1,8 @@
 import type { TaskRecord } from "../domain/task";
 import type { ActorContext } from "@/features/actors/domain/actor";
+import type { AuditEntryInput } from "@/features/audit/domain/audit-entry";
+
+export type SuccessAuditInput = Omit<AuditEntryInput, "outcome" | "fromState" | "toState">;
 
 export interface TaskListItem extends TaskRecord {
   workTypeName: string | null;
@@ -46,7 +49,7 @@ export function isTaskRepositoryError(error: unknown): error is TaskRepositoryEr
 }
 
 export interface TaskRepository {
-  createDraft(actorId: string, projectId: string): Promise<TaskRecord>;
+  createDraft(actorId: string, projectId: string, audit: SuccessAuditInput): Promise<TaskRecord>;
   findById(id: string): Promise<TaskRecord | null>;
   listPool(actor: ActorContext): Promise<TaskListItem[]>;
   listForAssignee(actor: ActorContext): Promise<TaskListItem[]>;
@@ -54,6 +57,7 @@ export interface TaskRepository {
   runCommand(
     taskId: string,
     expectedVersion: number,
+    audit: SuccessAuditInput,
     command: (context: CommandContext) => TaskRecord,
   ): Promise<TaskRecord>;
 }
