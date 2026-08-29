@@ -29,6 +29,22 @@ export class TaskRepositoryError extends Error {
   }
 }
 
+const repositoryErrorCodes = new Set([
+  "NOT_FOUND",
+  "VERSION_CONFLICT",
+  "INVALID_EVENT_COUNT",
+  "SCOPE_REQUIRED",
+  "PREREQUISITE_UNRESOLVED",
+]);
+
+export function isTaskRepositoryError(error: unknown): error is TaskRepositoryError {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return typeof candidate.code === "string"
+    && repositoryErrorCodes.has(candidate.code)
+    && typeof candidate.message === "string";
+}
+
 export interface TaskRepository {
   createDraft(actorId: string, projectId: string): Promise<TaskRecord>;
   findById(id: string): Promise<TaskRecord | null>;

@@ -1,5 +1,5 @@
 import type { TaskRepository } from "../data/task-repository";
-import { TaskRepositoryError } from "../data/task-repository";
+import { isTaskRepositoryError } from "../data/task-repository";
 import { TaskDomainError } from "../domain/task-errors";
 import { publish, returnToPool, start, take } from "../domain/task-transitions";
 import type { CommandResult } from "./command-result";
@@ -21,7 +21,7 @@ function failure(error: unknown): CommandResult<{ taskId: string }> {
     }
     return { ok: false, code: "INVALID_TRANSITION", message: error.message };
   }
-  if (error instanceof TaskRepositoryError) {
+  if (isTaskRepositoryError(error)) {
     if (error.code === "VERSION_CONFLICT" || error.code === "NOT_FOUND" || error.code === "SCOPE_REQUIRED" || error.code === "PREREQUISITE_UNRESOLVED") {
       return { ok: false, code: error.code, message: error.message };
     }
