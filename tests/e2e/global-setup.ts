@@ -4,7 +4,9 @@ import Database from "better-sqlite3";
 import { createSchema } from "../../src/db/schema";
 import { seedDefaultProject } from "../../src/db/seed";
 
-const filename = path.join(process.cwd(), "data", "browser-test.db");
+const filename = process.env.BROWSER_TEST_DATABASE_URL
+  ? path.resolve(process.env.BROWSER_TEST_DATABASE_URL)
+  : path.join(process.cwd(), "data", "browser-test.db");
 
 function initializeDatabase(databaseFilename: string, recreate: boolean) {
   fs.mkdirSync(path.dirname(databaseFilename), { recursive: true });

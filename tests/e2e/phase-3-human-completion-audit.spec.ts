@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -5,6 +6,23 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { recreateBrowserTestDatabase } from "./global-setup";
 
 const databaseFilename = path.join(process.cwd(), "data", "browser-test.db");
+const safeTaskKeys = [
+  "assigneeId",
+  "completedAt",
+  "completionSummary",
+  "deadline",
+  "estimatedBlocks",
+  "goal",
+  "id",
+  "projectId",
+  "publicationState",
+  "startedAt",
+  "title",
+  "version",
+  "workStatus",
+  "workTypeId",
+  "workTypeName",
+] as const;
 
 async function apiJson(
   request: APIRequestContext,
@@ -20,7 +38,7 @@ async function apiJson(
   return { response, body: await response.json() as Record<string, unknown> };
 }
 
-async function createRunningTask(request: APIRequestContext, actorId: string, title: string) {
+async function createPublishedTask(request: APIRequestContext, actorId: string, title: string) {
   const created = await apiJson(request, "post", "/api/tasks", actorId);
   expect(created.response.status()).toBe(201);
   const taskId = (created.body.data as { taskId: string }).taskId;
@@ -33,6 +51,11 @@ async function createRunningTask(request: APIRequestContext, actorId: string, ti
     estimatedBlocks: 1,
     deadline: null,
   })).response.ok()).toBe(true);
+  return taskId;
+}
+
+async function createRunningTask(request: APIRequestContext, actorId: string, title: string) {
+  const taskId = await createPublishedTask(request, actorId, title);
   expect((await apiJson(request, "post", `/api/tasks/${taskId}/take`, actorId, {
     expectedVersion: 2,
   })).response.ok()).toBe(true);
@@ -58,14 +81,24 @@ test("global setup recreates the Phase 3 database without audit history", () => 
     database.close();
   }
 
-  recreateBrowserTestDatabase(isolatedFilename);
-
-  const recreated = new Database(isolatedFilename, { readonly: true });
   try {
-    expect(recreated.prepare("SELECT COUNT(*) count FROM audit_logs WHERE request_id = ?")
-      .get(staleRequestId)).toEqual({ count: 0 });
+    execFileSync(process.execPath, [
+      path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"),
+      path.join(process.cwd(), "tests", "e2e", "global-setup.ts"),
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, BROWSER_TEST_DATABASE_URL: isolatedFilename },
+      stdio: "pipe",
+    });
+
+    const recreated = new Database(isolatedFilename, { readonly: true });
+    try {
+      expect(recreated.prepare("SELECT COUNT(*) count FROM audit_logs WHERE request_id = ?")
+        .get(staleRequestId)).toEqual({ count: 0 });
+    } finally {
+      recreated.close();
+    }
   } finally {
-    recreated.close();
     fs.rmSync(isolatedFilename, { force: true });
   }
 });
@@ -93,13 +126,15 @@ test("human completion persists while audits stay internal", async ({ page }) =>
   await page.getByLabel("완료 결과").fill(completionSummary);
   await page.getByRole("button", { name: "작업 완료" }).click();
   const detailCard = page.getByRole("article", { name: title });
-  await expect(detailCard).toContainText("완료");
-  await expect(detailCard).toContainText(/완료 20\d\d/);
+  await expect(detailCard.locator(".status")).toHaveText("완료");
+  const completionTime = detailCard.locator(".task-meta span").filter({ hasText: /^완료 / });
+  await expect(completionTime).toHaveText(/^완료 20\d\d/);
+  const completionTimeText = await completionTime.innerText();
   await expect(detailCard).toContainText(completionSummary);
 
   await page.reload();
-  await expect(detailCard).toContainText("완료");
-  await expect(detailCard).toContainText(/완료 20\d\d/);
+  await expect(detailCard.locator(".status")).toHaveText("완료");
+  await expect(completionTime).toHaveText(completionTimeText);
   await expect(detailCard).toContainText(completionSummary);
 
   const html = await page.content();
@@ -107,15 +142,20 @@ test("human completion persists while audits stay internal", async ({ page }) =>
   expect(html).not.toContain("metadata_json");
   expect(html).not.toContain("requestId");
 
-  for (const url of ["/api/my-work", "/api/task-pool"]) {
+  const openTaskId = await createPublishedTask(page.request, "user-fixed", `공개 API 안전 키 ${Date.now()}`);
+  for (const { url, expectedTaskId } of [
+    { url: "/api/my-work", expectedTaskId: taskId },
+    { url: "/api/task-pool", expectedTaskId: openTaskId },
+  ]) {
     const response = await page.request.get(url, {
       headers: { "x-project-actor": "user-fixed" },
     });
     expect(response.ok()).toBe(true);
-    const json = await response.text();
-    expect(json).not.toContain("request_id");
-    expect(json).not.toContain("metadata_json");
-    expect(json).not.toContain("requestId");
+    const body = await response.json() as { data: { tasks: Array<Record<string, unknown> & { id: string }> } };
+    expect(body.data.tasks.map((task) => task.id)).toContain(expectedTaskId);
+    for (const task of body.data.tasks) {
+      expect(Object.keys(task).sort()).toEqual([...safeTaskKeys].sort());
+    }
   }
 
   const database = new Database(databaseFilename, { readonly: true });
@@ -149,10 +189,9 @@ test("failed completion is audited without changing the task", async ({ request 
   const database = new Database(databaseFilename, { readonly: true });
 
   try {
-    const taskBefore = database.prepare(`SELECT work_status, version, completed_at, completion_summary
-      FROM tasks WHERE id = ?`).get(taskId);
-    const eventsBefore = database.prepare(`SELECT event_type, actor_id, from_state, to_state, created_at
-      FROM task_events WHERE task_id = ? ORDER BY created_at, id`).all(taskId);
+    const taskBefore = database.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
+    const eventsBefore = database.prepare(`SELECT * FROM task_events
+      WHERE task_id = ? ORDER BY created_at, id`).all(taskId);
 
     const emptySummary = await apiJson(request, "post", `/api/tasks/${taskId}/complete`, "user-fixed", {
       expectedVersion: 4,
@@ -172,10 +211,11 @@ test("failed completion is audited without changing the task", async ({ request 
     expect(aiCompletion.response.status()).toBe(403);
     expect(aiCompletion.body).toMatchObject({ ok: false, code: "ACTOR_NOT_ALLOWED" });
 
-    expect(database.prepare(`SELECT work_status, version, completed_at, completion_summary
-      FROM tasks WHERE id = ?`).get(taskId)).toEqual(taskBefore);
-    expect(database.prepare(`SELECT event_type, actor_id, from_state, to_state, created_at
-      FROM task_events WHERE task_id = ? ORDER BY created_at, id`).all(taskId)).toEqual(eventsBefore);
+    expect(database.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId)).toEqual(taskBefore);
+    const eventsAfter = database.prepare(`SELECT * FROM task_events
+      WHERE task_id = ? ORDER BY created_at, id`).all(taskId);
+    expect(eventsAfter).toHaveLength(eventsBefore.length);
+    expect(eventsAfter).toEqual(eventsBefore);
 
     const failureAudits = database.prepare(`SELECT outcome, error_code, request_id, metadata_json
       FROM audit_logs WHERE task_id = ? AND action = 'task.complete' AND outcome = 'failure'

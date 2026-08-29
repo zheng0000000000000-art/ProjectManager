@@ -40,6 +40,7 @@ The task row and complete ordered event list were identical before and after bot
 
 ## Final Verification
 
+- Runtime: `node --version` printed `v22.14.0`.
 - Focused Phase 3 E2E: 3 passed, 0 failed.
 - Unit tests: 15 files and 84 tests passed, 0 failed.
 - Lint: exit code 0 with no findings.
@@ -47,3 +48,12 @@ The task row and complete ordered event list were identical before and after bot
 - Full E2E: 16 passed, 0 failed.
 
 The browser runner emitted repeated `NO_COLOR`/`FORCE_COLOR` environment warnings. They did not change test outcomes and no application error or failed assertion accompanied them.
+
+## Fix Round 1 — Privacy and Persistence Assertion Depth
+
+- Evidence: the initial privacy test scanned response text without proving that the completed target task was in `/api/my-work`, and a completed task could not establish that `/api/task-pool` returned a task. The revised scenario observed the completed target ID in my-work and a separately created open task ID in the pool.
+- Fix: every returned task object is now constrained to an explicit allowlist of task-domain keys. Any snake_case, camelCase, renamed, or otherwise additional audit property fails the scenario.
+- Evidence: the initial rejected-completion snapshot selected only work status, version, completion time, and summary. The revised scenario snapshots `SELECT *` for the task and full event rows, then proves exact row equality, event identity, and event count after both failures.
+- Evidence: the initial completion UI checks used card-wide substring matching. The revised scenario observed an exact `.status` value of `완료`, captured the complete displayed completion-time string, reloaded, and observed the identical string afterward.
+- Setup coverage: the setup-contract scenario now launches the actual standalone `global-setup.ts` process against an isolated database selected through `BROWSER_TEST_DATABASE_URL`. Before that path was supported, the red run attempted to unlink the live database and failed with `EBUSY`; after the fix, the isolated sentinel audit was removed.
+- Fresh verification for this round used Node `v22.14.0`: focused Phase 3 E2E 3/3, unit tests 84/84 across 15 files, lint exit 0, production build exit 0, and full E2E 16/16.
