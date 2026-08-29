@@ -2,9 +2,9 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import type { TaskListItem } from "../data/task-repository";
 
-const statusLabel = { open: "열림", taken: "가져감", in_progress: "진행 중" };
+const statusLabel = { open: "열림", taken: "가져감", in_progress: "진행 중", completed: "완료" };
 
-function formatStartTime(value: string) {
+function formatTaskTime(value: string) {
   return new Intl.DateTimeFormat("ko-KR", {
     timeZone: "Asia/Seoul",
     year: "numeric",
@@ -28,8 +28,13 @@ export function TaskCard({ task, children }: { task: TaskListItem; children?: Re
         {task.workTypeName && <span>{task.workTypeName}</span>}
         {task.estimatedBlocks && <span>{task.estimatedBlocks} 블록</span>}
         {task.deadline && <span>마감 {task.deadline}</span>}
-        {task.workStatus === "in_progress" && task.startedAt && <span>시작 {formatStartTime(task.startedAt)}</span>}
+        {task.workStatus === "in_progress" && task.startedAt && <span>시작 {formatTaskTime(task.startedAt)}</span>}
+        {task.workStatus === "completed" && task.completedAt && <span>완료 {formatTaskTime(task.completedAt)}</span>}
       </div>
+      {task.workStatus === "completed" && task.completionSummary && <div className="task-completion">
+        <strong>완료 결과</strong>
+        <p>{task.completionSummary}</p>
+      </div>}
     </div>
     {children && <div className="task-card__action">{children}</div>}
   </article>;

@@ -6,7 +6,8 @@ const task = {
   id: "task-1", projectId: "project-default", title: "작업 카드", goal: "내용을 확인한다",
   workTypeId: "work-development", workTypeName: "개발", estimatedBlocks: 3,
   deadline: "2026-09-02", publicationState: "published" as const,
-  workStatus: "open" as const, assigneeId: null, startedAt: null, version: 2,
+  workStatus: "open" as const, assigneeId: null, startedAt: null,
+  completedAt: null, completionSummary: null, version: 2,
 };
 afterEach(cleanup);
 
@@ -35,5 +36,20 @@ describe("TaskCard", () => {
       startedAt: "2026-08-29T03:04:00.000Z",
     }} />);
     expect(screen.getByText("시작 2026. 8. 29. 12:04")).toBeInTheDocument();
+  });
+
+  it("shows terminal completion status, time, and result summary", () => {
+    render(<TaskCard task={{
+      ...task,
+      workStatus: "completed",
+      assigneeId: "user-fixed",
+      startedAt: "2026-08-29T03:04:00.000Z",
+      completedAt: "2026-08-29T03:05:00.000Z",
+      completionSummary: "검증과 인계를 마쳤다",
+    }} />);
+
+    expect(screen.getByText("완료")).toBeInTheDocument();
+    expect(screen.getByText("완료 2026. 8. 29. 12:05")).toBeInTheDocument();
+    expect(screen.getByText("검증과 인계를 마쳤다")).toBeInTheDocument();
   });
 });

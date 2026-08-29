@@ -1,8 +1,6 @@
 import { z } from "zod";
-import { getTaskRepository } from "@/db/client";
-import { getCurrentActor } from "@/features/actors/server/current-actor";
-import { createTaskCommands } from "@/features/tasks/server/task-commands";
 import { apiErrorResponse, commandResultResponse, invalidJsonResponse } from "@/features/tasks/server/http";
+import { getTaskMutationCommands } from "@/features/tasks/server/task-mutation-commands";
 
 const publishBody = z.object({
   expectedVersion: z.number().int().positive(),
@@ -17,9 +15,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const parsed = publishBody.safeParse(await request.json());
     if (!parsed.success) return invalidJsonResponse();
-    const actor = await getCurrentActor();
     const { id } = await context.params;
-    const result = await createTaskCommands(getTaskRepository(), actor).publishTask({
+    const result = await (await getTaskMutationCommands("task.publish", parsed.data.expectedVersion)).publishTask({
       taskId: id,
       ...parsed.data,
       deadline: parsed.data.deadline ?? null,

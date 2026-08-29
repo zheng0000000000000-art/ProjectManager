@@ -4,6 +4,7 @@ import { TaskCard } from "@/features/tasks/components/task-card";
 import { returnTaskAction, startTaskAction, takeTaskAction } from "@/features/tasks/server/actions";
 import { EditTaskForm } from "./edit-task-form";
 import { getCurrentActor } from "@/features/actors/server/current-actor";
+import { CompleteTaskForm } from "./complete-task-form";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,8 @@ export default async function TaskDetailPage({ params }: { params: Promise<{ id:
         <form action={startTaskAction}><input type="hidden" name="taskId" value={task.id}/><input type="hidden" name="expectedVersion" value={task.version}/><button className="button button--primary">작업 시작</button></form>
         <form action={returnTaskAction}><input type="hidden" name="taskId" value={task.id}/><input type="hidden" name="expectedVersion" value={task.version}/><button className="button">돌려놓기</button></form>
       </div>}
+      {task.workStatus === "in_progress" && actor.actorType === "human" && task.assigneeId === actor.userId &&
+        <CompleteTaskForm taskId={task.id} expectedVersion={task.version} />}
     </TaskCard>
   </main>;
 }

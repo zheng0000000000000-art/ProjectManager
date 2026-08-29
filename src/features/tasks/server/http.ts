@@ -4,7 +4,7 @@ import type { CommandResult } from "./command-result";
 
 const statusByCode = {
   VALIDATION_ERROR: 400,
-  INVALID_TRANSITION: 400,
+  INVALID_TRANSITION: 409,
   SCOPE_REQUIRED: 403,
   ACTOR_NOT_ALLOWED: 403,
   OWNERSHIP_REQUIRED: 403,
